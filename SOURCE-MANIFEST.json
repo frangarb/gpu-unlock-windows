@@ -20,8 +20,8 @@
     },
     {
       "path": "CHANGES.md",
-      "bytes": 11499,
-      "sha256": "acb6fe52e062687b7c378e2ad99eda1e236eb5233807fcfce29c2edb5b54cdb5"
+      "bytes": 12103,
+      "sha256": "58111d8b738da609721e7a08bd3872b4970a137b296365cc112bea214a544646"
     },
     {
       "path": "GpuUnlock.cmd",
@@ -30,8 +30,8 @@
     },
     {
       "path": "GpuUnlock.ps1",
-      "bytes": 57519,
-      "sha256": "689084e0b5833ca8fb7b1197f07fff9c66bdd093733407826273d0f40ea3d2f3"
+      "bytes": 60071,
+      "sha256": "7650e6c99198e768b5a6b94c9f0000817626f0dcbcb232cd2c9184433bb96793"
     },
     {
       "path": "LICENSE",
@@ -3375,18 +3375,18 @@
     },
     {
       "path": "docs/DISCOVERY.es.md",
-      "bytes": 15697,
-      "sha256": "1fc8bd84b828085af1355cd28736536701e3f8237634650dbcdf55f38f276b70"
+      "bytes": 15804,
+      "sha256": "0cf07bd57a190ec25faf71c1bd239c5ef0d68a6ebb450b911f8dc168f55356f6"
     },
     {
       "path": "docs/GUIDE.en.md",
-      "bytes": 4531,
-      "sha256": "db970d4377c642dad015d2be171a9c5cd0fbd98a8b514cd1ddfc4ea54f65ca6a"
+      "bytes": 4728,
+      "sha256": "87b125260862af59d367418d75758ef49fdaf971653abfaf9297558cbc512bec"
     },
     {
       "path": "docs/GUIDE.ko.md",
-      "bytes": 5093,
-      "sha256": "92bea5330791c013cfa9812021dbb1d801107dbdb87388b7eb1cdb96c9ea688b"
+      "bytes": 5236,
+      "sha256": "1fd632bd40e783a0644871e3d1821945f7c13f1232bf85c4a17bbafa569962ea"
     },
     {
       "path": "docs/HEADLESS.en.md",
@@ -3435,8 +3435,8 @@
     },
     {
       "path": "docs/USER-GUIDE.es.md",
-      "bytes": 8236,
-      "sha256": "438cb033f7ba125ed4dba2acd63cb361872ef4cc2d547b51a194bc25cd519ab7"
+      "bytes": 8520,
+      "sha256": "c47aedf7ec495d7ddeba20fda5fae47302d540e24b50ac8fa2ec25dc80f0fbd4"
     },
     {
       "path": "efi_runtime.c",
@@ -4270,8 +4270,8 @@
     },
     {
       "path": "tools/prepare_usb.py",
-      "bytes": 4863,
-      "sha256": "15678ee72a82bc8d03f96eac5036a816dd1783e76246cccdce6f730ba067d13c"
+      "bytes": 4862,
+      "sha256": "166aebf2e4506291d705cef65d4bf795da7373490965a2e3d2b714b34d690c5e"
     },
     {
       "path": "tools/test_collect_compatibility.py",

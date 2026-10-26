@@ -12,7 +12,7 @@ Save your work before proceeding. Before changing Secure Boot settings on a PC u
 - **Keep the RTX 3090 installed and its auxiliary power cables connected.** Disconnecting the RTX monitor cable does not mean disconnecting GPU power.
 - Confirm that both firmware and Windows display normally through integrated graphics.
 - The verified configuration uses x64 UEFI boot with Secure Boot disabled. Finish any required settings changes and saves before unlock.
-- Prepare a FAT32 USB with sufficient space and back up its existing contents. The packaging tool does not format USBs or shrink disks.
+- Prepare a FAT32 USB stick whose partition is a real **ESP** (GPT type `c12a7328-f81f-11d2-ba4b-00a0c93ec93b`), with sufficient space, and back up its existing contents. A plain FAT32 data partition is not enough: the firmware only enumerates an EFI System Partition. The packaging tool does not format USBs or shrink disks.
 
 ## 2. Prepare the executable and assets
 
@@ -28,7 +28,7 @@ Prepare the [five firmware files](ASSETS.en.md) in a local `assets/` directory, 
 python .\tools\prepare_usb.py --assets .\assets --output .\usb-package
 ```
 
-After size and hash validation, the tool creates a **new local folder**. Manually copy the **contents of** `usb-package` to the FAT32 USB root. Back up and inspect existing destination files before replacing anything.
+After size and hash validation, the tool creates a **new local folder**. Manually copy the **contents of** `usb-package` to the root of the FAT32 ESP. Back up and inspect existing destination files before replacing anything.
 
 ```text
 USB:/

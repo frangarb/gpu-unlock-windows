@@ -699,12 +699,27 @@ function Show-GpuUnlockWindow{
   Add-Type -AssemblyName System.Drawing
   [void][System.Windows.Forms.Application]::EnableVisualStyles()
 
+  # The frame below is written in 96-DPI pixels. The desktop DPI is read once
+  # and every control is scaled from it after the layout is built, so 125 % and
+  # 150 % keep the proportions instead of clipping the text.
+  $screen=[System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
+  $uiScale=[double]$screen.DpiX/96.0
+  $screen.Dispose()
+  function Resize-Tree($Parent,[double]$Scale){
+    foreach($child in $Parent.Controls){
+      $child.Location=[System.Drawing.Point]::new([int][math]::Round($child.Left*$Scale),[int][math]::Round($child.Top*$Scale))
+      $child.Size=[System.Drawing.Size]::new([int][math]::Round($child.Width*$Scale),[int][math]::Round($child.Height*$Scale))
+      if($child.Controls.Count){Resize-Tree $child $Scale}
+    }
+  }
+
   $admin=Test-Admin
   $state=@{Bench=$null;SelfCheck=$SelfCheck}
 
   $form=New-Object System.Windows.Forms.Form
   $form.Text='NVIDIA Ampere Unlock - RTX 3060'
   $form.ClientSize=New-Object System.Drawing.Size(760,640)
+  $form.AutoScaleMode='None'
   $form.StartPosition='CenterScreen'
   $form.FormBorderStyle='FixedSingle'
   $form.MaximizeBox=$false
@@ -902,6 +917,7 @@ function Show-GpuUnlockWindow{
     $d=New-Object System.Windows.Forms.Form
     $d.Text='Baseline - locked reference rate'
     $d.ClientSize=New-Object System.Drawing.Size(470,196)
+    $d.AutoScaleMode='None'
     $d.StartPosition='CenterParent'
     $d.FormBorderStyle='FixedDialog'
     $d.MaximizeBox=$false
@@ -952,6 +968,12 @@ function Show-GpuUnlockWindow{
     }
     New-DialogButton 'FORGET' 274 88 {$d.Tag=@{Action='forget'};$d.Close()}
     New-DialogButton 'CLOSE' 368 88 {$d.Close()}
+    if([math]::Abs($uiScale-1) -gt 0.01){
+      Resize-Tree $d $uiScale
+      $d.ClientSize=[System.Drawing.Size]::new(
+        [int][math]::Round($d.ClientSize.Width*$uiScale),
+        [int][math]::Round($d.ClientSize.Height*$uiScale))
+    }
     return $d
   }
   function Show-BaselineDialog{
@@ -1061,6 +1083,35 @@ $verifyButton=New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify 
   $foot.Text='The unlock lives in the GPU firmware RAM only: a full power-off returns the card to factory state.'
   $form.Controls.Add($foot)
 
+  # Fonts are in points and grow with the DPI on their own; only the geometry
+  # is scaled, once, after every control exists and before the window does.
+  if([math]::Abs($uiScale-1) -gt 0.01){
+    Resize-Tree $form $uiScale
+    $form.ClientSize=[System.Drawing.Size]::new(
+      [int][math]::Round($form.ClientSize.Width*$uiScale),
+      [int][math]::Round($form.ClientSize.Height*$uiScale))
+  }
+  # A scaled-up fixed layout can still be taller than a small screen. The log
+  # pane is the only flexible part, so take the height from it and keep the
+  # footer under it; if the minimum log still does not fit, the window scrolls.
+  $frame=[int][math]::Round(40*$uiScale)
+  $work=[System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+  if(($form.ClientSize.Height+$frame) -gt $work.Height){
+    $over=($form.ClientSize.Height+$frame)-$work.Height
+    $shrink=[math]::Min($over,[math]::Max(0,$out.Height-60))
+    if($shrink -gt 0){
+      $out.Height=$out.Height-$shrink
+      $foot.Top=$out.Bottom+10
+      $form.ClientSize=[System.Drawing.Size]::new($form.ClientSize.Width,$foot.Bottom+12)
+    }
+  }
+  if((($form.ClientSize.Height+$frame) -gt $work.Height) -or ($form.ClientSize.Width -gt $work.Width)){
+    $form.AutoScroll=$true
+    $form.ClientSize=[System.Drawing.Size]::new(
+      [math]::Min($form.ClientSize.Width,$work.Width-40),
+      [math]::Min($form.ClientSize.Height,$work.Height-$frame-8))
+  }
+
   if($SelfCheck){
     $buttons=@($form.Controls | Where-Object {$_ -is [System.Windows.Forms.Button]})
     $names=@($buttons | ForEach-Object {$_.Text})
@@ -1090,6 +1141,7 @@ $verifyButton=New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify 
   $form.Add_Shown({
     & $refresh
     $verifyButton.Focus()
+    if($form.AutoScroll){$form.AutoScrollPosition=New-Object System.Drawing.Point(0,0)}
     if($StartAction){
       switch($StartAction){
         'Verify'    { & $run 'Verify' { Invoke-Verify } -NeedsAdmin }

@@ -25,6 +25,14 @@
   flat button draws an unreadable dark label) and explains itself on click. A
   refused UAC prompt keeps the window open with a `Cancelled: ...` line instead
   of a .NET error dialog; a thread-exception handler covers any other failure.
+- The window is laid out in 96-DPI pixels and scaled once to the desktop DPI,
+  so 125 % and 150 % keep the proportions instead of clipping; if the scaled
+  frame is taller than the working area the log pane gives up height first and
+  the frame scrolls. Verified at 96 DPI (unchanged frame) and with the factor
+  forced to 1.5; not run on a real 150 % display.
+- Corrected the boot-medium wording: the firmware only enumerates a FAT32 **ESP**
+  (GPT type `c12a7328-...`), not a plain FAT32 USB. Fixed in `docs/GUIDE.en.md`,
+  `docs/GUIDE.ko.md`, `docs/DISCOVERY.es.md` and the packaging tool's message.
 - Not verified yet: this board's handling of `BootNext` (one restart is the
   test).
 

@@ -90,7 +90,7 @@ def prepare(root, assets, output):
             raise ValueError('Output appeared during preparation')
         stage.rename(output)
     print('Created local package:', output)
-    print('Back up your FAT32 USB, then copy the contents manually. No disk was modified.')
+    print('Back up the FAT32 ESP, then copy the contents manually. No disk was modified.')
 
 
 def main():

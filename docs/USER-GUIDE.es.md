@@ -58,6 +58,11 @@ botones:
 | **LOGS** | Abre la carpeta de logs de la partición |
 | **HELP** | Abre esta guía |
 
+La ventana está pensada en píxeles de 96 DPI y se escala sola al DPI del
+escritorio, así que a 125 % o 150 % conserva las proporciones. Si el marco
+escalado no entra en la pantalla, primero cede altura el panel de salida y, si
+aun así no entra, la ventana se desplaza con barra.
+
 Las filas se pintan por consecuencia: **verde** cuando el estado deja pasar el
 desbloqueo (Secure Boot apagado, entrada registrada, próximo arranque armado,
 tarjeta a tasa completa), **rojo** cuando lo bloquea (Secure Boot encendido,

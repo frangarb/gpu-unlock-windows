@@ -118,7 +118,8 @@ de paginación, así que su cola puede ser inamovible: elegí otra partición de
 o mové el pagefile antes. Aviso: algunas placas sólo enumeran
 la ESP del disco de arranque; si la entrada no aparece en F8, probá
 `bcdedit /set {fwbootmgr} bootsequence <id>` (ver más abajo) o mové la partición a
-un pendrive FAT32 con tipo ESP.
+un pendrive cuya partición sea una **ESP FAT32** (tipo GPT
+`{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}`): un pendrive FAT32 común no cuenta.
 
 En todos los casos, verificá antes de compilar:
 
@@ -274,7 +275,7 @@ bcdedit /set {fwbootmgr} bootsequence $s.EntryId    # arranque único de esa ent
 
 El `bootsequence` se consume en un solo arranque y vuelve a Windows; el orden normal
 no cambia. Si aun así no arranca, la placa no enumera esa ESP: mové la partición a
-un pendrive FAT32 con tipo ESP o al disco de arranque.
+un pendrive con una ESP FAT32 o al disco de arranque.
 
 ## Errores esperables
 
