@@ -674,12 +674,24 @@ function Invoke-Activate([switch]$Automatic){
 
 # --- window ----------------------------------------------------------------
 
+# UAC's "no" is an answer, not a failure: ERROR_CANCELLED is 1223 and its
+# HRESULT is 0x800704C7, both independent of the display language.
+function Test-ElevationCancelled([Exception]$Exception){
+  foreach($e in @($Exception,$Exception.InnerException)){
+    if(!$e){continue}
+    if(($e -is [System.ComponentModel.Win32Exception]) -and ([int]$e.NativeErrorCode -eq 1223)){return $true}
+    if([int]$e.HResult -eq -2147023673){return $true}
+  }
+  return ($Exception.Message -match '(?i)cancel|anul')
+}
+# Returns $false when the user refuses elevation and never throws for it.
 function Restart-Elevated([string]$Action){
   $file=Join-Path $PSHOME 'powershell.exe'
   if(!(Test-Path -LiteralPath $file)){$file='powershell.exe'}
   $arguments=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath,'-Gui')
   if($Action){$arguments+=@('-StartAction',$Action)}
-  Start-Process -FilePath $file -Verb RunAs -ArgumentList $arguments
+  try{Start-Process -FilePath $file -Verb RunAs -ArgumentList $arguments; return $true}
+  catch{if(Test-ElevationCancelled $_.Exception){return $false};throw}
 }
 
 function Show-GpuUnlockWindow{
@@ -697,7 +709,8 @@ function Show-GpuUnlockWindow{
   $form.FormBorderStyle='FixedSingle'
   $form.MaximizeBox=$false
   $form.Font=New-Object System.Drawing.Font('Segoe UI',9)
-  $form.BackColor=[System.Drawing.Color]::FromArgb(250,250,250)
+  $form.BackColor=[System.Drawing.Color]::White
+  $form.ForeColor=[System.Drawing.Color]::FromArgb(17,17,17)
 
   $badge=New-Object System.Windows.Forms.Label
   $badge.Location=New-Object System.Drawing.Point(20,14)
@@ -707,11 +720,19 @@ function Show-GpuUnlockWindow{
   $badge.Text='CHECKING'
   $form.Controls.Add($badge)
 
-  $good=[System.Drawing.Color]::FromArgb(22,120,60)
-  $bad=[System.Drawing.Color]::FromArgb(170,32,32)
-  $warn=[System.Drawing.Color]::FromArgb(160,95,0)
-  $plain=[System.Drawing.Color]::FromArgb(30,30,30)
-  $quiet=[System.Drawing.Color]::FromArgb(110,110,110)
+  # Text colours clear 8:1 contrast on white (WCAG AAA) and differ in hue, not
+  # only in lightness: the old 5:1 green and amber washed out at 9 pt.
+  $plain=[System.Drawing.Color]::FromArgb(17,17,17)   # 18.9:1
+  $caption=[System.Drawing.Color]::FromArgb(31,41,51) # 14.8:1
+  $good=[System.Drawing.Color]::FromArgb(10,92,41)    # 8.2:1
+  $bad=[System.Drawing.Color]::FromArgb(143,16,16)    # 9.3:1
+  $warn=[System.Drawing.Color]::FromArgb(122,66,0)    # 8.1:1
+  $quiet=[System.Drawing.Color]::FromArgb(74,74,74)   # 8.9:1
+  $badgeGood=[System.Drawing.Color]::FromArgb(11,107,47)
+  $badgeBad=[System.Drawing.Color]::FromArgb(161,20,20)
+  $badgeSlate=[System.Drawing.Color]::FromArgb(55,66,79)
+  $badgeIdle=[System.Drawing.Color]::FromArgb(232,232,232)
+  $badgeIdleText=[System.Drawing.Color]::FromArgb(17,17,17)
 
   $captions=@('Machine','GPU','Secure Boot','Administrator','Boot entry','Next start','Last attempt','Transaction','Tensor rate')
   $values=@()
@@ -721,31 +742,36 @@ function Show-GpuUnlockWindow{
     $key.Location=New-Object System.Drawing.Point(20,(72+($i*24)))
     $key.Size=New-Object System.Drawing.Size(120,20)
     $key.Font=New-Object System.Drawing.Font('Segoe UI',9,[System.Drawing.FontStyle]::Bold)
-    $key.ForeColor=[System.Drawing.Color]::FromArgb(70,70,70)
+    $key.ForeColor=$caption
     $form.Controls.Add($key)
     $v=New-Object System.Windows.Forms.Label
     $v.Location=New-Object System.Drawing.Point(145,(72+($i*24)))
     $v.Size=New-Object System.Drawing.Size(600,20)
+    $v.ForeColor=$plain
+    $v.Font=New-Object System.Drawing.Font('Segoe UI',9.75)
+    $v.BackColor=[System.Drawing.Color]::Transparent
     $form.Controls.Add($v)
     $values+=$v
   }
 
   $banner=New-Object System.Windows.Forms.Label
-  $banner.Location=New-Object System.Drawing.Point(20,364)
+  $banner.Location=New-Object System.Drawing.Point(20,368)
   $banner.Size=New-Object System.Drawing.Size(720,22)
   $banner.ForeColor=$warn
-  $banner.Text=$(if($admin){''}else{'Not elevated: everything except MEASURE needs administrator (Windows hides the unlock partition). Each button asks for it.'})
+  $banner.Font=New-Object System.Drawing.Font('Segoe UI',9.75)
+  $banner.Text=$(if($admin){''}else{'Not elevated: everything except MEASURE asks for administrator.'})
   $form.Controls.Add($banner)
 
   $out=New-Object System.Windows.Forms.TextBox
-  $out.Location=New-Object System.Drawing.Point(20,390)
-  $out.Size=New-Object System.Drawing.Size(720,200)
+  $out.Location=New-Object System.Drawing.Point(20,394)
+  $out.Size=New-Object System.Drawing.Size(720,196)
   $out.Multiline=$true
   $out.ReadOnly=$true
   $out.ScrollBars='Vertical'
   $out.WordWrap=$false
   $out.Font=New-Object System.Drawing.Font('Consolas',9)
   $out.BackColor=[System.Drawing.Color]::White
+  $out.ForeColor=$plain
   $out.Text='Press VERIFY to read the last run and measure the card.'
   $form.Controls.Add($out)
 
@@ -784,20 +810,20 @@ function Show-GpuUnlockWindow{
     $verdict=$(if($state.Bench){Get-UnlockVerdict $state.Bench.Fp16}else{'unknown'})
     if($verdict -eq 'unlocked'){
       $badge.Text='UNLOCKED - full tensor rate'
-      $badge.BackColor=$good
+      $badge.BackColor=$badgeGood
       $badge.ForeColor=[System.Drawing.Color]::White
     } elseif($verdict -eq 'locked'){
       $badge.Text='LOCKED - GeForce tensor rate'
-      $badge.BackColor=[System.Drawing.Color]::FromArgb(160,40,40)
+      $badge.BackColor=$badgeBad
       $badge.ForeColor=[System.Drawing.Color]::White
     } elseif($s.RunOk){
       $badge.Text='NOT MEASURED - the transaction completed on the last run'
-      $badge.BackColor=[System.Drawing.Color]::FromArgb(70,80,95)
+      $badge.BackColor=$badgeSlate
       $badge.ForeColor=[System.Drawing.Color]::White
     } else {
       $badge.Text='UNKNOWN - verify to measure'
-      $badge.BackColor=[System.Drawing.Color]::FromArgb(210,210,210)
-      $badge.ForeColor=[System.Drawing.Color]::FromArgb(60,60,60)
+      $badge.BackColor=$badgeIdle
+      $badge.ForeColor=$badgeIdleText
     }
     $restart.Enabled=[bool]$s.EntryRegistered
     $values[8].ForeColor=$(if($verdict -eq 'unlocked'){$good}elseif($verdict -eq 'locked'){$bad}else{$quiet})
@@ -805,35 +831,63 @@ function Show-GpuUnlockWindow{
     $restartHint.ForeColor=$(if($s.OneShot -eq $true){$good}elseif($s.EntryRegistered){$plain}else{$quiet})
   }
 
+  # Every message the window shows goes through here, so no code path can fall
+  # through to the .NET crash dialog for a normal outcome.
+  $note={
+    param([string]$Text,[switch]$IsError)
+    if($out.Text -eq 'Press VERIFY to read the last run and measure the card.'){$out.Text=''}
+    if($out.Text.Length -and !$out.Text.EndsWith("`n")){$out.AppendText("`r`n")}
+    $out.AppendText($Text+"`r`n")
+    $out.SelectionStart=$out.Text.Length
+    $out.ScrollToCaret()
+    if($IsError){[Console]::Error.WriteLine($Text)}
+  }
+  $script:UiNote=$note
+  # A refused UAC prompt keeps the window open with a one-line note; the
+  # handler is the backstop for anything a click handler did not catch.
+  [System.Windows.Forms.Application]::add_ThreadException({
+    param($sender,$eventArgs)
+    $message='ERROR: '+$eventArgs.Exception.Message
+    if($script:UiNote){& $script:UiNote $message -IsError}else{[Console]::Error.WriteLine($message)}
+  })
+
   $run={
     param([string]$Label,[scriptblock]$Action,[switch]$NeedsAdmin,[string]$ElevateAs)
     if($NeedsAdmin -and !$admin){
-      Restart-Elevated $(if($ElevateAs){$ElevateAs}else{$Label})
-      $form.Close()
+      try{
+        if(Restart-Elevated $(if($ElevateAs){$ElevateAs}else{$Label})){$form.Close()}
+        else{& $note ('Cancelled: administrator rights were refused, so nothing was changed. '+$Label+' needs them.')}
+      } catch {& $note ('ERROR: '+$_.Exception.Message) -IsError}
       return
     }
-    if($out.Text -eq 'Press VERIFY to read the last run and measure the card.'){$out.Text=''}
-    $out.AppendText(("`r`n== {0} ==`r`n" -f $Label))
+    & $note ('== {0} ==' -f $Label)
     try{
       $text=(& $Action *>&1 | Out-String)
-      if($text.Trim()){$out.AppendText($text)}
+      if($text.Trim()){& $note $text.TrimEnd()}
     } catch {
-      $message='ERROR: '+$_.Exception.Message
-      $out.AppendText($message+"`r`n")
-      [Console]::Error.WriteLine($message)
+      & $note ('ERROR: '+$_.Exception.Message) -IsError
     }
-    $out.SelectionStart=$out.Text.Length
-    $out.ScrollToCaret()
     & $refresh
   }
 
+  # Flat buttons with a real border: the themed default is a pale grey shape on
+  # a white form, which reads as disabled.
+  function Set-FlatButton($Button){
+    $Button.FlatStyle='Flat'
+    $Button.BackColor=[System.Drawing.Color]::FromArgb(242,243,245)
+    $Button.ForeColor=$plain
+    $Button.FlatAppearance.BorderColor=[System.Drawing.Color]::FromArgb(120,126,136)
+    $Button.FlatAppearance.BorderSize=1
+    $Button.FlatAppearance.MouseOverBackColor=[System.Drawing.Color]::FromArgb(229,232,238)
+    $Button.FlatAppearance.MouseDownBackColor=[System.Drawing.Color]::FromArgb(211,216,224)
+  }
   function New-ActionButton([string]$Text,[int]$X,[int]$Width,[scriptblock]$OnClick){
     $b=New-Object System.Windows.Forms.Button
     $b.Text=$Text
-    $b.Location=New-Object System.Drawing.Point($X,292)
+    $b.Location=New-Object System.Drawing.Point($X,296)
     $b.Size=New-Object System.Drawing.Size($Width,28)
-    $b.UseVisualStyleBackColor=$true
     $b.Add_Click($OnClick)
+    Set-FlatButton $b
     $form.Controls.Add($b)
     return $b
   }
@@ -850,7 +904,10 @@ function Show-GpuUnlockWindow{
     $d.MaximizeBox=$false
     $d.MinimizeBox=$false
     $d.Font=$form.Font
+    $d.BackColor=[System.Drawing.Color]::White
+    $d.ForeColor=$plain
     $info=New-Object System.Windows.Forms.Label
+    $info.ForeColor=$plain
     $info.Location=New-Object System.Drawing.Point(14,12)
     $info.Size=New-Object System.Drawing.Size(440,66)
     $info.Text=$(if($current){('Recorded: {0:N2} TFLOPS FP16 ({1})' -f [double]$current.Fp16,(''+$current.MeasuredUtc).Substring(0,[Math]::Min(16,(''+$current.MeasuredUtc).Length)))}else{'No baseline yet. It is the locked rate of this card, measured once on a clean boot with the unlock entry not used.'})
@@ -860,6 +917,7 @@ function Show-GpuUnlockWindow{
     $label.Size=New-Object System.Drawing.Size(200,18)
     $label.Text='Value by hand (TFLOPS FP16):'
     $label.Font=New-Object System.Drawing.Font('Segoe UI',8)
+    $label.ForeColor=$caption
     $d.Controls.Add($label)
     $box=New-Object System.Windows.Forms.TextBox
     $box.Location=New-Object System.Drawing.Point(14,98)
@@ -872,8 +930,8 @@ function Show-GpuUnlockWindow{
       $b.Text=$Text
       $b.Location=New-Object System.Drawing.Point($X,142)
       $b.Size=New-Object System.Drawing.Size($Width,30)
-      $b.UseVisualStyleBackColor=$true
       $b.Add_Click($OnClick)
+      Set-FlatButton $b
       $d.Controls.Add($b)
     }
     New-DialogButton 'MEASURE NOW' 14 132 {$d.Tag=@{Action='measure'};$d.Close()}
@@ -899,13 +957,15 @@ function Show-GpuUnlockWindow{
   }
 
   $baselineClick={
-    if($admin){$pick=Show-BaselineDialog}else{$pick=@{Action='measure'}}
-    if(!$pick -or !$pick.Action){return}
-    switch($pick.Action){
-      'measure'{ & $run 'Baseline' { Invoke-Baseline } -NeedsAdmin }
-      'save'   { & $run 'Baseline (by hand)' { Save-BaselineValue $pick.Value } -NeedsAdmin -ElevateAs 'Baseline' }
-      'forget' { & $run 'Baseline (forget)' { Remove-Baseline } -NeedsAdmin -ElevateAs 'Baseline' }
-    }
+    try{
+      if($admin){$pick=Show-BaselineDialog}else{$pick=@{Action='measure'}}
+      if(!$pick -or !$pick.Action){return}
+      switch($pick.Action){
+        'measure'{ & $run 'Baseline' { Invoke-Baseline } -NeedsAdmin }
+        'save'   { & $run 'Baseline (by hand)' { Save-BaselineValue $pick.Value } -NeedsAdmin -ElevateAs 'Baseline' }
+        'forget' { & $run 'Baseline (forget)' { Remove-Baseline } -NeedsAdmin -ElevateAs 'Baseline' }
+      }
+    } catch {& $note ('ERROR: '+$_.Exception.Message) -IsError}
   }
 
   # After activation the next start runs the unlock once; the restart is the
@@ -917,7 +977,12 @@ function Show-GpuUnlockWindow{
     if($answer -eq 'Yes'){ & $run 'Restart' { [void](Invoke-ArmNextBoot); Invoke-RestartNow } -NeedsAdmin }
   }
 
-  [void](New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify } -NeedsAdmin })
+$verifyButton=New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify } -NeedsAdmin }
+  $rule=New-Object System.Windows.Forms.Panel
+  $rule.Location=New-Object System.Drawing.Point(20,288)
+  $rule.Size=New-Object System.Drawing.Size(720,1)
+  $rule.BackColor=[System.Drawing.Color]::FromArgb(196,200,207)
+  $form.Controls.Add($rule)
   [void](New-ActionButton 'MEASURE' 122 80 { & $run 'Measure' { $b=Get-Benchmark; if(!$b){'Tensor benchmark not built; see docs/BENCHMARK.en.md'}else{$state.Bench=$b; $b.Raw; ('verdict: '+ (Get-UnlockVerdict $b.Fp16))} } })
   [void](New-ActionButton 'BASELINE' 208 96 { & $baselineClick })
   [void](New-ActionButton 'ACTIVATE' 310 88 {
@@ -926,8 +991,9 @@ function Show-GpuUnlockWindow{
   })
   $auto=New-Object System.Windows.Forms.CheckBox
   $auto.Text='also automatic'
-  $auto.Location=New-Object System.Drawing.Point(404,296)
+  $auto.Location=New-Object System.Drawing.Point(404,300)
   $auto.Size=New-Object System.Drawing.Size(110,22)
+  $auto.ForeColor=$plain
   $form.Controls.Add($auto)
   $auto.Add_Click({
     if(!$auto.Checked){return}
@@ -948,7 +1014,10 @@ function Show-GpuUnlockWindow{
     try{
       if($admin){Start-Process explorer.exe $dir}
       else{Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-Command',("Start-Process explorer.exe '"+$dir+"'"))}
-    } catch {$out.AppendText(('ERROR: '+$_.Exception.Message)+"`r`n")}
+    } catch {
+      if(Test-ElevationCancelled $_.Exception){& $note 'Cancelled: administrator rights were refused, the log folder stays closed.'}
+      else{& $note ('ERROR: '+$_.Exception.Message) -IsError}
+    }
   })
   [void](New-ActionButton 'HELP' 684 52 {
     try{Start-Process (Join-Path $repo 'docs/USER-GUIDE.es.md')}catch{$out.AppendText(('ERROR: '+$_.Exception.Message)+"`r`n")}
@@ -956,10 +1025,10 @@ function Show-GpuUnlockWindow{
 
   $restart=New-Object System.Windows.Forms.Button
   $restart.Text='RESTART FOR UNLOCK'
-  $restart.Location=New-Object System.Drawing.Point(20,326)
+  $restart.Location=New-Object System.Drawing.Point(20,330)
   $restart.Size=New-Object System.Drawing.Size(160,30)
   $restart.Font=New-Object System.Drawing.Font('Segoe UI',9,[System.Drawing.FontStyle]::Bold)
-  $restart.UseVisualStyleBackColor=$true
+  Set-FlatButton $restart
   $restart.Enabled=$false
   $restart.Add_Click({
     $answer=[System.Windows.Forms.MessageBox]::Show(
@@ -970,7 +1039,7 @@ function Show-GpuUnlockWindow{
   $form.Controls.Add($restart)
 
   $restartHint=New-Object System.Windows.Forms.Label
-  $restartHint.Location=New-Object System.Drawing.Point(190,332)
+  $restartHint.Location=New-Object System.Drawing.Point(190,336)
   $restartHint.Size=New-Object System.Drawing.Size(550,20)
   $restartHint.ForeColor=$quiet
   $restartHint.Text='Activate first: there is no entry to boot.'
@@ -979,7 +1048,7 @@ function Show-GpuUnlockWindow{
   $foot=New-Object System.Windows.Forms.Label
   $foot.Location=New-Object System.Drawing.Point(20,600)
   $foot.Size=New-Object System.Drawing.Size(720,18)
-  $foot.ForeColor=[System.Drawing.Color]::FromArgb(90,90,90)
+  $foot.ForeColor=$quiet
   $foot.Text='The unlock lives in the GPU firmware RAM only: a full power-off returns the card to factory state.'
   $form.Controls.Add($foot)
 
@@ -997,6 +1066,9 @@ function Show-GpuUnlockWindow{
     # Offline check of the firmware load-option parse that finds the boot slot.
     $probe=[byte[]](0,0,0,0,0,0)+[Text.Encoding]::Unicode.GetBytes($entryName+[char]0)
     if((Get-LoadOptionDescription $probe) -cne $entryName){throw 'GUI self-check failed: firmware load-option parsing'}
+    # A refused UAC prompt must read as a refusal, and nothing else must.
+    if(!(Test-ElevationCancelled ([System.ComponentModel.Win32Exception]::new(1223)))){throw 'GUI self-check failed: refused elevation not recognised'}
+    if(Test-ElevationCancelled ([System.Exception]::new('boom'))){throw 'GUI self-check failed: unrelated error read as refused elevation'}
     & $refresh
     if($values[0].Text -notmatch 'BIOS'){throw 'GUI self-check failed: status rows were not filled'}
     if($values[2].Text -notmatch 'off|ON|unknown'){throw 'GUI self-check failed: secure boot row'}
@@ -1008,6 +1080,7 @@ function Show-GpuUnlockWindow{
 
   $form.Add_Shown({
     & $refresh
+    $verifyButton.Focus()
     if($StartAction){
       switch($StartAction){
         'Verify'    { & $run 'Verify' { Invoke-Verify } -NeedsAdmin }

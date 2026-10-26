@@ -64,6 +64,10 @@ tarjeta a tasa completa), **rojo** cuando lo bloquea (Secure Boot encendido,
 transacción fallida, tarjeta a tasa GeForce) y **naranja** cuando falta el
 permiso para saberlo.
 
+Si rechazás el pedido de UAC, la ventana **no se cierra ni muestra una ventana de
+error**: deja una línea `Cancelled: administrator rights were refused, so nothing
+was changed.` en el panel de salida y sigue como estaba.
+
 ### Consola
 
 En PowerShell, desde la raíz del repositorio:

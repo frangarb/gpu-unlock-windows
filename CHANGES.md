@@ -18,8 +18,13 @@
   administrator and next start, and colour by consequence (green passes, red
   blocks, orange unknown). VERIFY, LOGS and every write path ask for elevation;
   MEASURE stays unprivileged.
+- Window contrast: text colours now clear 8:1 on white (was 5:1), the value
+  rows are 9.75 pt, buttons are flat with a visible border, and a rule separates
+  the state rows from the actions. A refused UAC prompt keeps the window open
+  with a `Cancelled: ...` line instead of a .NET error dialog; a thread-exception
+  handler covers any other handler failure.
 - Not verified yet: this board's handling of `BootNext` (one restart is the
-  test) and the visual layout of the new rows and dialog.
+  test).
 
 ## 2026-10-25 — GA106 RTX 3060 written and unlocked; window and baseline recorder
 

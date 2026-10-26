@@ -20,8 +20,8 @@
     },
     {
       "path": "CHANGES.md",
-      "bytes": 10993,
-      "sha256": "9aa75c099907fd38288efcc4681e57533fc59a2d9c50a42bad742da5fc867ea3"
+      "bytes": 11305,
+      "sha256": "92df3d6214cf58b13845ab72cb174fe02a3ab00620495ce91c36507c02093c50"
     },
     {
       "path": "GpuUnlock.cmd",
@@ -30,8 +30,8 @@
     },
     {
       "path": "GpuUnlock.ps1",
-      "bytes": 53164,
-      "sha256": "1d63b97b76211003ed2d01f8eb6fa0ebcd88d73c9c652fa3bed4483a47229c3c"
+      "bytes": 56866,
+      "sha256": "a457f8f400153b5e13131c2a5b1f4f6cf4cc73484fdfa3a4656d0d41bed28675"
     },
     {
       "path": "LICENSE",
@@ -3435,8 +3435,8 @@
     },
     {
       "path": "docs/USER-GUIDE.es.md",
-      "bytes": 8012,
-      "sha256": "a958b5db8fe1e6d726a506f1febbe7026d47250c1dc044917cd81fd1f2e9c4ac"
+      "bytes": 8236,
+      "sha256": "438cb033f7ba125ed4dba2acd63cb361872ef4cc2d547b51a194bc25cd519ab7"
     },
     {
       "path": "efi_runtime.c",
