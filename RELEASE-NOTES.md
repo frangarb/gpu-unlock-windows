@@ -1,4 +1,34 @@
-# Windows GPU UNLOCK — RTX 3090 Windows case study
+# Windows GPU UNLOCK — release history
+
+## v0.4.0 — 2026-10-25: GA106 RTX 3060 writes the unlock; end-user window
+
+The first release where a second, deliberately different machine **wrote** the
+unlock on hardware and carried the full tensor rate into Windows:
+
+- ASRock B450M-HDV R4.0, BIOS P10.60, Ryzen without an iGPU, ASUS RTX 3060 12GB
+  (`10de:2504`, subsystem `1043:8816`). The console is created on the target card
+  by an EDID/mouse driver, so three owners are released and the screen stays dark
+  until Windows returns. Transaction `result=0`, SS0 `0x88888888` and SS1 `0x8`
+  after the PCIe FLR, driver 621.01, 45-48 TFLOPS FP16 and 23-25 TF32.
+- Four rehearsals before the write, each with its log: read-only discovery,
+  console verification, console release, and full release with EDID/nvgop
+  release and PCI decode restore.
+  [Evidence](evidence/discovery-rtx3060/README.md).
+- `GpuUnlock.ps1` gained `-Status` (text or `-Json`), `-Baseline` and `-Gui` with
+  the unchanged `-Activate` / `-Automatic` / `-Verify` / `-Deactivate`; the
+  window opens with `GpuUnlock.cmd`. Mutations keep the verified-then-rollback
+  policy and the CLI keeps its output and exit codes.
+- `-Baseline` records the locked rate once per machine and `-Verify` then reports
+  the measured gain; it refuses to save a measurement taken on an unlocked card.
+- Source-only, as before: no NVIDIA firmware, no PROM dumps, no partition
+  identifiers, no EFI binaries. All three verified profiles build from source
+  with the documented steps.
+
+Still not established: a locked baseline on this machine (one command, on a
+clean boot), S3/hibernate resume, repeated cold-boot reliability, games and
+ComfyUI.
+
+---
 
 이 문서는 **v0.1.0 USB 수동 릴리스 이력**입니다. 새 내부 부팅 소스·실험용 자동판은
 [v0.2.0 안내](RELEASE-v0.2.0.md)와 [단계별 가이드](docs/INTERNAL-BOOT.ko.md)를 참고하세요.

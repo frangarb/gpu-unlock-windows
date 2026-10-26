@@ -29,9 +29,37 @@ tarjeta, porque después ese registro queda protegido hasta el próximo apagado.
 
 ## Uso
 
+Hay dos formas: la **ventana** (doble clic en `GpuUnlock.cmd`) o la **consola**.
+La ventana y la consola hacen exactamente lo mismo: la ventana sólo pide
+administrador al activar o desactivar.
+
+### Ventana
+
+Doble clic en `GpuUnlock.cmd`. Muestra el estado leído de esta máquina —placa,
+tarjeta, Secure Boot, entrada de arranque, último intento y resultado de la
+transacción— y el rendimiento medido. Los botones:
+
+| Botón | Qué hace |
+|---|---|
+| **VERIFY** | Lee el último log y mide la tarjeta; el cartel pasa a UNLOCKED o LOCKED |
+| **MEASURE** | Sólo mide, sin leer el log |
+| **ACTIVATE** | Copia las imágenes y agrega la entrada al menú F8 |
+| **also automatic** | Además la pone primera y apaga Inicio Rápido |
+| **DEACTIVATE** | Borra la entrada y restaura el orden anterior |
+| **LOGS** | Abre la carpeta de logs de la partición |
+| **HELP** | Abre esta guía |
+
+Si la ventana se abre sin privilegios, dice `Not elevated` arriba; al tocar
+ACTIVATE o DEACTIVATE pide UAC y se reabre elevada.
+
+### Consola
+
 En PowerShell **como administrador**, desde la raíz del repositorio:
 
 ```powershell
+# 0. Estado, sin tocar nada (también anda sin administrador).
+.\GpuUnlock.ps1 -Status          # -Status -Json para scripts
+
 # 1. Activar: copia las imágenes y agrega la entrada al menú de arranque (F8).
 .\GpuUnlock.ps1 -Activate
 
@@ -79,6 +107,25 @@ al estado de fábrica**: no hay nada escrito en la GPU, su BIOS ni el driver.
   persistente que deshacer.
 - Suspensión y reinicio no re-desblocan más que lo que ya está: el desbloqueo
   vive en RAM de la GPU hasta el apagado.
+
+## Medir la línea base (una vez, opcional pero recomendado)
+
+El README dice ~25 TFLOPS porque es la especificación de GeForce. Para tener el
+número **real de esta máquina**:
+
+1. Apagá por completo —no reinicies— y arrancá Windows **sin** elegir la entrada
+de desbloqueo (con Inicio Rápido apagado, un `shutdown /s /t 0` alcanza).
+2. Corré:
+
+   ```powershell
+   .\GpuUnlock.ps1 -Baseline
+   ```
+
+   Guarda la medición en `%ProgramData%\WindowsGPUUnlock\baseline.json`. Si la
+tarjeta mide desbloqueada, **se niega** a guardar: no se puede registrar una
+línea base mala por error.
+3. Desde ahí, `-Verify` y la ventana muestran el porcentaje real
+   (`+82% vs baseline 24.8`).
 
 ## Cómo saber que de verdad está desbloqueada
 

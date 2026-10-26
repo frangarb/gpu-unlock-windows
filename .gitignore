@@ -33,3 +33,4 @@ research/results/
 research/headless/registration.local.json
 research/headless/*-registration.local.json
 internal-boot/deps/
+AGENTS.md

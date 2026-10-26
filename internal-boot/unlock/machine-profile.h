@@ -49,8 +49,9 @@
 #elif defined(GU_PROFILE_ASROCK_B450M_RTX3060)
 
 /* ASRock B450M-HDV R4.0 BIOS P10.60, Ryzen without a console iGPU,
- * ASUS RTX 3060 12GB (GA106): one read-only discovery capture
- * (evidence/discovery-rtx3060), no transaction has run on it. */
+ * ASUS RTX 3060 12GB (GA106): hardware-verified headless port; one discovery
+ * capture, three read-only rehearsals and one written unlock on 2026-10-25
+ * (evidence/discovery-rtx3060). */
 #define GU_PROFILE_NAME "ASROCK-B450M-HDV-R4.0-P10.60-RTX3060"
 #define GU_BOARD_ID 0x250410deU
 #define GU_BOARD_SUBSYSTEM 0x88161043U

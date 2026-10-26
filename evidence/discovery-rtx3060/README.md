@@ -462,4 +462,38 @@ The pinned transaction assets already cover GA106:
 - Freshness and provenance: a text file cannot prove which machine produced
   it. The registration and the image hash in `research/headless/` are the only
   local record.
-- Any unlock outcome. No transaction has run on this card.
+- Any unlock outcome: a capture says nothing about rates. The written run is
+  described in *Final state* below.
+
+## Final state, 2026-10-25: written, unlocked, cleaned up
+
+After the three read-only rehearsals (console verify `CV03`, console release
+`R2C00`, full release with decode restore `R2C01`) the write pair ran and
+completed.
+
+- One automatic transaction: `result=0 containment=0 started=1 quiesced=1
+  fault=0 retained=0 maps=0 FLR=1`, and `FINAL status=0 stage=transaction
+  attempted=1 driver_release=0 clean=1` in `AUTO000002/REPORT.TXT`.
+- Selectors after the FLR: `SS0=88888888 SS1=00000008`, `WPR2=1ffffe00:00000000`,
+  `BME=0 pending=0`.
+- Windows started on driver 621.01 through the same chain load; the wrapper
+  logged `full-windows-start` and `verify-complete` with status 0 (`HLS000002.TXT`).
+- Measured in that Windows: 45-48 TFLOPS FP16 and 23-25 TF32
+  (`research/bench/tensor_rate.exe 4096 20`).
+
+Boot entries and files after the cleanup:
+
+- The only firmware entry for this port is `NVIDIA Ampere Unlock - RTX 3060`
+  (`\EFI\WindowsGPUUnlock\WRITE3060.EFI`), last in the F8 menu; Windows Boot
+  Manager is still first and no one-time override is pending.
+- The dedicated ESP holds the write pair and the assets: `WRITE3060.EFI`,
+  `UNLOCK-HEADLESS.EFI` and `\RTX3090-UNLOCK\ASSETS\`.
+- The development images (`PREFLIGHT.EFI`, `OBSERVE.EFI`, the three
+  `CONSOLE-VERIFY` variants, `CONSOLE-RELEASE.EFI`, `RELEASE-FULL.EFI`) and their
+  earlier logs were archived, not deleted, in
+  `%ProgramData%\WindowsGPUUnlock\Final\20261025-223221\`.
+- A full power-off returns the card to factory state; nothing persists in the GPU.
+
+Still missing here: a locked baseline measured on this machine
+(`GpuUnlock.ps1 -Baseline` on a clean boot), S3/hibernate resume, repeated cold
+boots and any application-level gain.

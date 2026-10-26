@@ -1,5 +1,36 @@
 # Changes
 
+## 2026-10-25 — GA106 RTX 3060 written and unlocked; window and baseline recorder
+
+- Second machine completed the whole chain and **wrote the unlock**: ASRock
+  B450M-HDV R4.0, BIOS P10.60, Ryzen without an iGPU, ASUS RTX 3060 12GB
+  (`10de:2504`, subsystem `1043:8816`). The console lives on the target card,
+  so three owners are released instead of two and nothing is left to display
+  with. Transaction `result=0` with SS0 `0x88888888` and SS1 `0x8` surviving the
+  PCIe FLR; Windows starts on driver 621.01 and the card measures 45-48 TFLOPS
+  FP16 / 23-25 TF32, the full rate for this part.
+- Four rehearsals preceded the write: read-only discovery capture, console
+  verification, console-consumer release and full release with EDID/nvgop
+  release and PCI decode restore. Evidence, all logs and the register tables
+  are in `evidence/discovery-rtx3060/`.
+- New GA106 machine profile `ASROCK_B450M_RTX3060` (console on the target, own
+  nvgop/EDID fingerprints). `tools/derive_profile.py` and
+  `tools/derive_display.py` derive profiles from a local capture instead of
+  hand-edited constants, and both refuse ambiguity.
+- `GpuUnlock.ps1` is now a function library with the same CLI behaviour and
+  exit codes, plus `-Status` (text or `-Json`), `-Baseline` and `-Gui`.
+  `GpuUnlock.cmd` opens the window by double click. Mutations keep the existing
+  step/verify/rollback policy.
+- `-Baseline` records the locked rate once per machine in
+  `%ProgramData%\WindowsGPUUnlock\baseline.json`; it refuses to save a number
+  measured on an unlocked card, and `-Verify` then reports the measured gain.
+- The window shows the state read-only (board, card, Secure Boot, boot entry,
+  last attempt, transaction) and the measured rate, runs the same functions as
+  the console and asks for administrator only for activate/deactivate.
+- Boot cleanup: development entries removed and the surviving entry renamed;
+  the ESP now holds only the write pair and the assets, with the removed EFI
+  images and logs archived under `%ProgramData%\WindowsGPUUnlock\Final\`.
+
 ## 2026-10-24 — v0.3.1 variable headless display-child discovery
 
 - Fixed preflight rejection when ASUS firmware exposes three RTX display

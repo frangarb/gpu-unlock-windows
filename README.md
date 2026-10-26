@@ -2,10 +2,13 @@
 
 **English** | [한국어](README.ko.md)
 
-Experimental UEFI unlock and direct Windows handoff for one documented **RTX 3090
-Founders Edition / ASUS BIOS 3057** system. **v0.3.1 is a source-only pre-release**:
-build the internal EFI for your own partition GUIDs. Firmware assets and private,
-partition-specific EFI binaries are not bundled with this release.
+Experimental UEFI unlock and direct Windows handoff, hardware-verified on three
+documented machines: an **RTX 3090 Founders Edition / ASUS BIOS 3057** system, a
+**RTX 3070 Ti / ASUS TUF B660M-E D4** host, and an **RTX 3060 / ASRock
+B450M-HDV R4.0** host whose console lives on the target card. **v0.4.0 is a
+source-only release**: build the internal EFI for your own partition GUIDs.
+Firmware assets and private, partition-specific EFI binaries are not bundled
+with this release.
 
 On October 24, 2026, the system completed an internal **headless unlock** with all
 monitors on the RTX: one active RTX GOP before release, zero physical GOPs afterward,
@@ -32,13 +35,22 @@ measured **45–48 TFLOPS FP16→FP32** and **23–25 TFLOPS TF32→FP32**, the 
 figures for this part instead of the GeForce rate.
 [Evidence, all four rehearsals and the exact logs](evidence/discovery-rtx3060/README.md).
 
-End-user tool for that machine (activate, verify, deactivate):
+End-user tool for that machine — window, status or console:
 
 ```powershell
+.\GpuUnlock.cmd               # window: state, VERIFY/MEASURE, activate, deactivate
+.\GpuUnlock.ps1 -Status       # one screen of state; add -Json for scripts
 .\GpuUnlock.ps1 -Activate     # stage the images and add the F8 entry
 .\GpuUnlock.ps1 -Verify       # read the last log and measure the tensor rate
+.\GpuUnlock.ps1 -Baseline     # record the locked rate once, on a clean boot
 .\GpuUnlock.ps1 -Deactivate   # remove the entry, restore the boot order
 ```
+
+The window shows the same state read-only and runs the same functions as the
+console; only activate and deactivate ask for administrator. `-Baseline` stores
+the locked rate in `%ProgramData%\WindowsGPUUnlock\baseline.json` and refuses to
+save a number measured on an unlocked card, so `-Verify` reports the measured
+gain instead of a specification figure.
 
 [User guide (es)](docs/USER-GUIDE.es.md) · [Porting guide for other machines (es)](docs/PORTING.es.md)
 

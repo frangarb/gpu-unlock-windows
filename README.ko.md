@@ -2,6 +2,11 @@
 
 [English](README.md) | **한국어**
 
+> **2026-10-25:** 이 문서는 v0.3.1 시점의 RTX 3090 사례를 설명합니다. RTX 3060(GA106)
+> 포트, 데스크톱 창, 기준선 기록은 [English](README.md),
+> [사용 안내(es)](docs/USER-GUIDE.es.md), [호환성](docs/COMPATIBILITY.en.md)에
+> 정리되어 있습니다.
+
 한 대의 **RTX 3090 Founders Edition / ASUS BIOS 3057** 시스템에서 검증한 실험용 UEFI
 언락과 Windows 직접 인계 구현입니다. **v0.3.1은 소스 전용 사전 릴리스**입니다.
 자신의 파티션 GUID로 내부 EFI를 빌드해야 하며, 펌웨어와 개인 파티션 설정이 들어간

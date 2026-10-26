@@ -47,3 +47,17 @@ To run the public Python tool tests without firmware or GPU access:
 ```powershell
 python -m unittest discover -s tools -p "test_*.py" -v
 ```
+
+## Source inventory
+
+`SOURCE-MANIFEST.json` lists every tracked file with its size and SHA-256, and
+`tools/prepare_usb.py` refuses to package when one of them changed. Regenerate it
+after adding or editing tracked files; `--check` reports what is out of date
+without writing:
+
+```powershell
+python tools/update_source_manifest.py --check
+python tools/update_source_manifest.py --note "Public v0.4.0 source inventory; ..."
+```
+
+Stage new files with `git add` first: the inventory is built from `git ls-files`.

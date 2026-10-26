@@ -2,8 +2,9 @@
 
 **English** | [한국어](COMPATIBILITY.ko.md)
 
-The current implementation checks more than a model name. Two machines have
-recorded successful internal headless boots. Builds compile for exactly one
+The current implementation checks more than a model name. Three machines have
+recorded successful internal headless boots; the GA106 one below also completed
+written unlock transactions. Builds compile for exactly one
 reviewed profile selected at build time in
 [internal-boot/unlock/machine-profile.h](../internal-boot/unlock/machine-profile.h);
 other GPUs or platforms remain unsupported.
@@ -69,6 +70,35 @@ unlock on this profile as well; there is no resume path.
 Select this profile with `research/headless/build-unlock.ps1 -HardwareProfile b660m-3070ti`
 and `internal-boot/Configure.ps1 -HardwareProfile b660m-3070ti`; the default
 `b650m-3090fe` profile is unchanged.
+
+## Profile 3: ASRock B450M-HDV R4.0 / RTX 3060 (console on the target)
+
+Intel-free, splitter-free host: the Ryzen has no console iGPU, the only GOP is
+the target's, and the BIOS console is created on top of the card by an
+EDID/mouse runtime driver. Releasing the console therefore releases **three**
+owners and leaves nothing to display with until Windows starts.
+
+| Common GPU/platform item | Validated value |
+|---|---|
+| Card | ASUS RTX 3060 12GB (GA106) |
+| PCI identity | `10de:2504`, subsystem `1043:8816` |
+| Chip / VRAM register | `0xb76000a1` / `0x3000` MiB (12 GiB) |
+| BAR0 | `0xfb000000`, 16 MiB |
+| PROM SHA256 | `a61344ca9e10b06a0538067cae05bd3387b2109583fea5e63cec6191d43214ee` |
+| Motherboard / BIOS | ASRock B450M-HDV R4.0 / P10.60 |
+| CPU | AMD Ryzen (no iGPU, no AMD GOP) |
+| Recorded Windows / driver | Windows 11 / NVIDIA 621.01 |
+| UEFI / Secure Boot | x64 / disabled |
+| Selector profile | `entryLatchedSs1Full`; cold SS0 `0x62130012`, SS1 `0x2` are latched and the transaction reports SS0 `0x88888888`, SS1 `0x8` |
+| Console chain | AMI text-out + gfx drivers, plus an EDID/mouse runtime driver that also owns the console input protocols |
+
+Measured on the same cuBLAS GEMM 4096 x 4096 protocol: 45-48 TFLOPS FP16 and
+23-25 TFLOPS TF32 while unlocked. No locked baseline was recorded on this
+machine yet; `GpuUnlock.ps1 -Baseline` records one on a clean boot and `-Verify`
+then reports the gain. S3 sleep invalidates the unlock here as well.
+
+End-user tool: `GpuUnlock.ps1` (console) and `GpuUnlock.cmd` (window).
+Evidence: [discovery, rehearsals and the written run](../evidence/discovery-rtx3060/README.md).
 
 | Other configuration | Status |
 |---|---|
