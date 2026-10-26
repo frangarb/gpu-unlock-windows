@@ -709,8 +709,8 @@ function Show-GpuUnlockWindow{
   $form.FormBorderStyle='FixedSingle'
   $form.MaximizeBox=$false
   $form.Font=New-Object System.Drawing.Font('Segoe UI',9)
-  $form.BackColor=[System.Drawing.Color]::White
-  $form.ForeColor=[System.Drawing.Color]::FromArgb(17,17,17)
+  $form.BackColor=[System.Drawing.Color]::FromArgb(35,39,46)
+  $form.ForeColor=[System.Drawing.Color]::FromArgb(238,241,245)
 
   $badge=New-Object System.Windows.Forms.Label
   $badge.Location=New-Object System.Drawing.Point(20,14)
@@ -720,19 +720,23 @@ function Show-GpuUnlockWindow{
   $badge.Text='CHECKING'
   $form.Controls.Add($badge)
 
-  # Text colours clear 8:1 contrast on white (WCAG AAA) and differ in hue, not
-  # only in lightness: the old 5:1 green and amber washed out at 9 pt.
-  $plain=[System.Drawing.Color]::FromArgb(17,17,17)   # 18.9:1
-  $caption=[System.Drawing.Color]::FromArgb(31,41,51) # 14.8:1
-  $good=[System.Drawing.Color]::FromArgb(10,92,41)    # 8.2:1
-  $bad=[System.Drawing.Color]::FromArgb(143,16,16)    # 9.3:1
-  $warn=[System.Drawing.Color]::FromArgb(122,66,0)    # 8.1:1
-  $quiet=[System.Drawing.Color]::FromArgb(74,74,74)   # 8.9:1
-  $badgeGood=[System.Drawing.Color]::FromArgb(11,107,47)
-  $badgeBad=[System.Drawing.Color]::FromArgb(161,20,20)
-  $badgeSlate=[System.Drawing.Color]::FromArgb(55,66,79)
-  $badgeIdle=[System.Drawing.Color]::FromArgb(232,232,232)
-  $badgeIdleText=[System.Drawing.Color]::FromArgb(17,17,17)
+  # Dark grey canvas with bright text: every colour below clears 4.9:1 on the
+  # surface and the hues stay saturated instead of muddy.
+  $plain=[System.Drawing.Color]::FromArgb(238,241,245)   # 13.2:1
+  $caption=[System.Drawing.Color]::FromArgb(174,185,198) # 7.5:1
+  $good=[System.Drawing.Color]::FromArgb(91,224,143)     # 8.9:1
+  $bad=[System.Drawing.Color]::FromArgb(255,138,138)     # 6.4:1
+  $warn=[System.Drawing.Color]::FromArgb(255,196,107)    # 9.5:1
+  $quiet=[System.Drawing.Color]::FromArgb(152,162,176)   # 5.8:1
+  $buttonFace=[System.Drawing.Color]::FromArgb(51,58,68)
+  $buttonEdge=[System.Drawing.Color]::FromArgb(107,118,134)
+  $badgeGood=[System.Drawing.Color]::FromArgb(30,122,70)
+  $badgeBad=[System.Drawing.Color]::FromArgb(179,32,32)
+  $badgeSlate=[System.Drawing.Color]::FromArgb(57,65,76)
+  $badgeIdle=[System.Drawing.Color]::FromArgb(57,65,76)
+  $badgeIdleText=[System.Drawing.Color]::FromArgb(238,241,245)
+  $badge.BackColor=$badgeIdle
+  $badge.ForeColor=$badgeIdleText
 
   $captions=@('Machine','GPU','Secure Boot','Administrator','Boot entry','Next start','Last attempt','Transaction','Tensor rate')
   $values=@()
@@ -770,8 +774,8 @@ function Show-GpuUnlockWindow{
   $out.ScrollBars='Vertical'
   $out.WordWrap=$false
   $out.Font=New-Object System.Drawing.Font('Consolas',9)
-  $out.BackColor=[System.Drawing.Color]::White
-  $out.ForeColor=$plain
+  $out.BackColor=[System.Drawing.Color]::FromArgb(27,31,37)
+  $out.ForeColor=[System.Drawing.Color]::FromArgb(232,236,242)
   $out.Text='Press VERIFY to read the last run and measure the card.'
   $form.Controls.Add($out)
 
@@ -825,7 +829,6 @@ function Show-GpuUnlockWindow{
       $badge.BackColor=$badgeIdle
       $badge.ForeColor=$badgeIdleText
     }
-    $restart.Enabled=[bool]$s.EntryRegistered
     $values[8].ForeColor=$(if($verdict -eq 'unlocked'){$good}elseif($verdict -eq 'locked'){$bad}else{$quiet})
     $restartHint.Text=$(if($s.OneShot -eq $true){'Armed: restart now and the unlock runs before Windows.'}elseif($s.EntryRegistered){'Arms the next start and restarts it, so no F8 and no firmware menu.'}else{'Activate first: there is no entry to boot.'})
     $restartHint.ForeColor=$(if($s.OneShot -eq $true){$good}elseif($s.EntryRegistered){$plain}else{$quiet})
@@ -874,12 +877,12 @@ function Show-GpuUnlockWindow{
   # a white form, which reads as disabled.
   function Set-FlatButton($Button){
     $Button.FlatStyle='Flat'
-    $Button.BackColor=[System.Drawing.Color]::FromArgb(242,243,245)
-    $Button.ForeColor=$plain
-    $Button.FlatAppearance.BorderColor=[System.Drawing.Color]::FromArgb(120,126,136)
+    $Button.BackColor=$buttonFace
+    $Button.ForeColor=[System.Drawing.Color]::FromArgb(242,245,249)
+    $Button.FlatAppearance.BorderColor=$buttonEdge
     $Button.FlatAppearance.BorderSize=1
-    $Button.FlatAppearance.MouseOverBackColor=[System.Drawing.Color]::FromArgb(229,232,238)
-    $Button.FlatAppearance.MouseDownBackColor=[System.Drawing.Color]::FromArgb(211,216,224)
+    $Button.FlatAppearance.MouseOverBackColor=[System.Drawing.Color]::FromArgb(61,70,82)
+    $Button.FlatAppearance.MouseDownBackColor=[System.Drawing.Color]::FromArgb(72,83,95)
   }
   function New-ActionButton([string]$Text,[int]$X,[int]$Width,[scriptblock]$OnClick){
     $b=New-Object System.Windows.Forms.Button
@@ -904,7 +907,7 @@ function Show-GpuUnlockWindow{
     $d.MaximizeBox=$false
     $d.MinimizeBox=$false
     $d.Font=$form.Font
-    $d.BackColor=[System.Drawing.Color]::White
+    $d.BackColor=[System.Drawing.Color]::FromArgb(35,39,46)
     $d.ForeColor=$plain
     $info=New-Object System.Windows.Forms.Label
     $info.ForeColor=$plain
@@ -922,6 +925,9 @@ function Show-GpuUnlockWindow{
     $box=New-Object System.Windows.Forms.TextBox
     $box.Location=New-Object System.Drawing.Point(14,98)
     $box.Size=New-Object System.Drawing.Size(120,22)
+    $box.BackColor=[System.Drawing.Color]::FromArgb(27,31,37)
+    $box.ForeColor=[System.Drawing.Color]::FromArgb(232,236,242)
+    $box.BorderStyle='FixedSingle'
     if($current){$box.Text=('{0}' -f [double]$current.Fp16)}
     $d.Controls.Add($box)
     $d.Tag=@{Action=$null;Value=0.0}
@@ -981,7 +987,7 @@ $verifyButton=New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify 
   $rule=New-Object System.Windows.Forms.Panel
   $rule.Location=New-Object System.Drawing.Point(20,288)
   $rule.Size=New-Object System.Drawing.Size(720,1)
-  $rule.BackColor=[System.Drawing.Color]::FromArgb(196,200,207)
+  $rule.BackColor=[System.Drawing.Color]::FromArgb(74,84,97)
   $form.Controls.Add($rule)
   [void](New-ActionButton 'MEASURE' 122 80 { & $run 'Measure' { $b=Get-Benchmark; if(!$b){'Tensor benchmark not built; see docs/BENCHMARK.en.md'}else{$state.Bench=$b; $b.Raw; ('verdict: '+ (Get-UnlockVerdict $b.Fp16))} } })
   [void](New-ActionButton 'BASELINE' 208 96 { & $baselineClick })
@@ -994,6 +1000,7 @@ $verifyButton=New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify 
   $auto.Location=New-Object System.Drawing.Point(404,300)
   $auto.Size=New-Object System.Drawing.Size(110,22)
   $auto.ForeColor=$plain
+  $auto.BackColor=$form.BackColor
   $form.Controls.Add($auto)
   $auto.Add_Click({
     if(!$auto.Checked){return}
@@ -1029,8 +1036,10 @@ $verifyButton=New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify 
   $restart.Size=New-Object System.Drawing.Size(160,30)
   $restart.Font=New-Object System.Drawing.Font('Segoe UI',9,[System.Drawing.FontStyle]::Bold)
   Set-FlatButton $restart
-  $restart.Enabled=$false
+  # Left enabled on purpose: a disabled flat button draws its label in dark
+  # grey, unreadable here, so the click itself says why it cannot run.
   $restart.Add_Click({
+    try{if(!(EntryId)){& $note 'Nothing to restart for yet: press ACTIVATE first.';return}}catch{& $note ('ERROR: '+$_.Exception.Message) -IsError;return}
     $answer=[System.Windows.Forms.MessageBox]::Show(
       "Restart in 20 seconds with the unlock armed for this start?`r`n`r`nSave your work first: shutdown /a cancels.",
       'Restart for unlock','YesNo','Question')

@@ -20,8 +20,8 @@
     },
     {
       "path": "CHANGES.md",
-      "bytes": 11305,
-      "sha256": "92df3d6214cf58b13845ab72cb174fe02a3ab00620495ce91c36507c02093c50"
+      "bytes": 11499,
+      "sha256": "acb6fe52e062687b7c378e2ad99eda1e236eb5233807fcfce29c2edb5b54cdb5"
     },
     {
       "path": "GpuUnlock.cmd",
@@ -30,8 +30,8 @@
     },
     {
       "path": "GpuUnlock.ps1",
-      "bytes": 56866,
-      "sha256": "a457f8f400153b5e13131c2a5b1f4f6cf4cc73484fdfa3a4656d0d41bed28675"
+      "bytes": 57519,
+      "sha256": "689084e0b5833ca8fb7b1197f07fff9c66bdd093733407826273d0f40ea3d2f3"
     },
     {
       "path": "LICENSE",
