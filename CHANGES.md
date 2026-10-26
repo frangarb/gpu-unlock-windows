@@ -1,5 +1,26 @@
 # Changes
 
+## 2026-10-25 — one-time boot arm, baseline in the window, honest permissions
+
+- `-Activate` also arms the next start in the firmware's own one-time slot
+  (`BootNext`, read back after writing), so the unlock runs without the F8 menu
+  and without touching the boot order; Fast Startup goes off for that start and
+  `-Deactivate` restores it. A firmware refusal keeps the F8 entry and says so.
+- `-Restart` and the window's RESTART FOR UNLOCK restart in 20 s with the slot
+  armed; the window asks after activation instead of trusting memory.
+  `-Activate -Restart` does both without prompting.
+- Reading the unlock partition now reports that it needs administrator, which is
+  what Windows does: the ESP is hidden and `Get-Volume` returns a volume with no
+  path. It no longer claims the partition is the wrong one; the boot-entry and
+  Secure Boot rows distinguish "unknown" from "off". CLI errors print one line
+  and exit 1 (usage errors 2).
+- Window: BASELINE button with a measure / set-by-hand / forget dialog, rows for
+  administrator and next start, and colour by consequence (green passes, red
+  blocks, orange unknown). VERIFY, LOGS and every write path ask for elevation;
+  MEASURE stays unprivileged.
+- Not verified yet: this board's handling of `BootNext` (one restart is the
+  test) and the visual layout of the new rows and dialog.
+
 ## 2026-10-25 — GA106 RTX 3060 written and unlocked; window and baseline recorder
 
 - Second machine completed the whole chain and **wrote the unlock**: ASRock

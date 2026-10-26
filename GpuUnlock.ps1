@@ -2,18 +2,24 @@
 #
 # NVIDIA Ampere unlock for Windows - end-user tool for one reviewed machine.
 #
-#   .\GpuUnlock.ps1 -Gui           window: status, verify, activate, deactivate
+#   .\GpuUnlock.ps1 -Gui           window: status, verify, baseline, activate,
+#                                  deactivate, cold restart
 #   .\GpuUnlock.ps1 -Status        one screen of state; no writes, no reboot
 #   .\GpuUnlock.ps1 -Status -Json  the same state, machine-readable
 #   .\GpuUnlock.ps1 -Verify        check this boot: did the unlock run and is
 #                                  the card running at full tensor rate?
 #   .\GpuUnlock.ps1 -Baseline      record the locked rate once, on a clean boot
-#   .\GpuUnlock.ps1 -Activate      stage the images and add the firmware entry
-#                                  (F8 menu; Windows stays the default)
+#   .\GpuUnlock.ps1 -Activate      stage the images, add the firmware entry and
+#                                  arm it for exactly the next start
 #   .\GpuUnlock.ps1 -Activate -Automatic
 #                                  also boot it automatically (turns Fast
 #                                  Startup off)
+#   .\GpuUnlock.ps1 -Restart       arm the next start and restart now
 #   .\GpuUnlock.ps1 -Deactivate    remove the entry and restore the boot order
+#
+# Reading the unlock partition, changing the boot configuration and touching
+# firmware NVRAM need an elevated shell; status and the tensor measurement do
+# not. Every action that needs it says so instead of failing on a permission.
 #
 # The unlock lives in firmware RAM only: a full power-off returns the card to
 # factory state, and nothing here modifies the GPU, its BIOS or its driver.
@@ -26,8 +32,9 @@ param(
   [switch]$Status,
   [switch]$Json,
   [switch]$Baseline,
+  [switch]$Restart,
   [switch]$SelfCheck,
-  [ValidateSet('Verify','Measure','Activate','Deactivate','Automatic')][string]$StartAction
+  [ValidateSet('Verify','Measure','Baseline','Activate','Deactivate','Automatic','Restart')][string]$StartAction
 )
 $ErrorActionPreference='Stop'
 $repo=$PSScriptRoot
@@ -48,14 +55,18 @@ $benchReps=20
 # Measured on this part: locked ~25, unlocked 45-48 TFLOPS FP16->FP32.
 $unlockFp16=35
 
-if($Json -and !$Status){throw '-Json only applies to -Status'}
-if($SelfCheck -and !$Gui){throw '-SelfCheck only applies to -Gui'}
-if($StartAction -and !$Gui){throw '-StartAction only applies to -Gui'}
-if(!$Gui -and @($Activate,$Deactivate,$Verify,$Status,$Baseline | Where-Object {$_}).Count -ne 1){
-  throw 'Choose one action: -Gui, -Status, -Verify, -Baseline, -Activate or -Deactivate'
+# Usage errors exit 2 and print one line, like the runtime errors below.
+function Fail([string]$Message){[Console]::Error.WriteLine('ERROR: '+$Message);exit 2}
+if($Json -and !$Status){Fail '-Json only applies to -Status'}
+if($SelfCheck -and !$Gui){Fail '-SelfCheck only applies to -Gui'}
+if($StartAction -and !$Gui){Fail '-StartAction only applies to -Gui'}
+$chosen=@($Activate,$Deactivate,$Verify,$Status,$Baseline | Where-Object {$_}).Count
+if(!$Gui -and $chosen -ne 1 -and !($Restart -and $chosen -eq 0)){
+  Fail 'Choose one action: -Gui, -Status, -Verify, -Baseline, -Activate, -Restart or -Deactivate'
 }
-if($Gui -and @($Activate,$Deactivate,$Verify,$Baseline | Where-Object {$_}).Count -gt 1){throw 'Choose one action'}
-if($Automatic -and !$Activate){throw '-Automatic only applies to -Activate'}
+if($Gui -and @($Activate,$Deactivate,$Verify,$Baseline | Where-Object {$_}).Count -gt 1){Fail 'Choose one action'}
+if(!$Gui -and $Restart -and @($Status,$Verify,$Baseline,$Deactivate | Where-Object {$_}).Count){Fail '-Restart goes with -Activate or alone'}
+if($Automatic -and !$Activate){Fail '-Automatic only applies to -Activate'}
 
 function Bcd([string[]]$Arguments){
   $lines=@(& bcdedit @Arguments)
@@ -91,11 +102,17 @@ function EntryId{
   }
   return $null
 }
+# The ESP is hidden from normal users: without elevation Get-Volume returns an
+# empty Path and the volume looks like the wrong partition. Say which it is.
+function Test-AdminNeeded{
+  if(!(Test-Admin)){throw 'Administrator rights are required to read the unlock partition: Windows hides it from normal users. Reopen as administrator (the window asks for it).'}
+}
 function Target{
   $cfg=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/local-config.json') -Raw | ConvertFrom-Json
-  $part=Get-Partition -DriveLetter $cfg.UnlockDriveLetter
-  $vol=$part | Get-Volume
-  if($part.Guid -ne $cfg.UnlockPartitionGuid -or $part.IsSystem -or $part.GptType -ne '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -or $vol.FileSystem -ne 'FAT32' -or !$vol.Path){
+  $part=Get-Partition -DriveLetter $cfg.UnlockDriveLetter -ErrorAction SilentlyContinue
+  $vol=$(if($part){$part | Get-Volume -ErrorAction SilentlyContinue})
+  if(!$part -or !$vol -or $part.Guid -ne $cfg.UnlockPartitionGuid -or $part.IsSystem -or $part.GptType -ne '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -or $vol.FileSystem -ne 'FAT32' -or !$vol.Path){
+    Test-AdminNeeded
     throw 'The dedicated unlock partition is not the configured one'
   }
   return $vol.Path
@@ -132,11 +149,149 @@ function AssertStaged([string]$Root,$Manifest){
   }
 }
 
+# --- one-time boot (UEFI BootNext) ------------------------------------------
+#
+# BootNext is the firmware's own one-time slot: the next start runs that entry
+# and the firmware deletes the variable, so the normal order and the F8 menu
+# are untouched. It is read back after writing, which is what turns "the next
+# start will unlock" into a fact instead of a hope.
+if(-not ('GuUefi.Nvram' -as [type])){
+  Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace GuUefi {
+  public static class Nvram {
+    const string Global = "{8be4df61-93ca-11d2-aa0d-00e098032b8c}";
+    const uint SePrivilegeEnabled = 0x2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct Luid { public uint Low; public int High; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct TokenPrivileges { public uint Count; public Luid Privilege; public uint Attributes; }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern uint GetFirmwareEnvironmentVariableEx(string name, string guid, byte[] buffer, uint size, out uint attributes);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool SetFirmwareEnvironmentVariableEx(string name, string guid, byte[] data, uint size, uint attributes);
+
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool LookupPrivilegeValue(string system, string name, out Luid luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TokenPrivileges state, uint length, IntPtr previous, IntPtr returnLength);
+
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
+
+    static void EnableFirmwarePrivilege() {
+      IntPtr token;
+      if (!OpenProcessToken(GetCurrentProcess(), 0x28, out token)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      try {
+        Luid luid;
+        if (!LookupPrivilegeValue(null, "SeSystemEnvironmentPrivilege", out luid)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var state = new TokenPrivileges();
+        state.Count = 1;
+        state.Privilege = luid;
+        state.Attributes = SePrivilegeEnabled;
+        if (!AdjustTokenPrivileges(token, false, ref state, 0, IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        int error = Marshal.GetLastWin32Error();
+        if (error != 0) throw new Win32Exception(error);
+      } finally { CloseHandle(token); }
+    }
+
+    public static byte[] Read(string name) {
+      EnableFirmwarePrivilege();
+      var buffer = new byte[8192];
+      uint attributes;
+      uint size = GetFirmwareEnvironmentVariableEx(name, Global, buffer, (uint)buffer.Length, out attributes);
+      if (size == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+      var data = new byte[size];
+      Array.Copy(buffer, data, (int)size);
+      return data;
+    }
+
+    public static void Write(string name, byte[] data) {
+      EnableFirmwarePrivilege();
+      uint size = data == null ? 0u : (uint)data.Length;
+      if (!SetFirmwareEnvironmentVariableEx(name, Global, data, size, 0x7)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+  }
+}
+'@
+}
+
+# EFI_LOAD_OPTION: attributes (4), file path length (2), then the UTF-16
+# description up to its NUL.
+function Get-LoadOptionDescription([byte[]]$Data){
+  if(!$Data -or $Data.Length -le 6){return ''}
+  $text=[Text.Encoding]::Unicode.GetString($Data,6,$Data.Length-6)
+  $nul=$text.IndexOf([char]0)
+  if($nul -ge 0){return $text.Substring(0,$nul)}
+  return $text
+}
+# Boot#### slots whose EFI load option carries exactly this description.
+function Find-BootNumber([string]$Description){
+  $order=[GuUefi.Nvram]::Read('BootOrder')
+  $hits=@()
+  for($i=0;$i+1 -lt $order.Length;$i+=2){
+    $number=[BitConverter]::ToUInt16($order,$i)
+    try{$data=[GuUefi.Nvram]::Read(('Boot{0:x4}' -f $number))}catch{continue}
+    $text=Get-LoadOptionDescription $data
+    if($text -ceq $Description -and $hits -notcontains $number){$hits+=$number}
+  }
+  return $hits
+}
+function Get-OneShot{
+  try{$data=[GuUefi.Nvram]::Read('BootNext')}catch{return $null}
+  if($data.Length -lt 2){return $null}
+  return [int][BitConverter]::ToUInt16($data,0)
+}
+# A duplicate name makes the slot ambiguous; refuse instead of guessing.
+# Firmware NVRAM can lag the BCD write by a moment, so the lookup is retried.
+function Set-OneShot([string]$Id){
+  if(!$Id){throw 'There is no unlock entry to boot'}
+  $numbers=@()
+  for($attempt=0;$attempt -lt 5 -and $numbers.Count -ne 1;$attempt++){
+    if($attempt){Start-Sleep -Milliseconds 300}
+    try{$numbers=@(Find-BootNumber $entryName)}
+    catch{throw ('Cannot read the firmware boot entries ('+$_.Exception.GetBaseException().Message+'); use the F8 menu once.')}
+  }
+  if($numbers.Count -ne 1){throw ('Expected exactly one firmware entry named "{0}" and found {1}; use the F8 menu once.' -f $entryName,$numbers.Count)}
+  try{[GuUefi.Nvram]::Write('BootNext',[BitConverter]::GetBytes([uint16]$numbers[0]))}
+  catch{throw ('The firmware refused the one-time boot slot ('+$_.Exception.GetBaseException().Message+'); use the F8 menu once.')}
+  $armed=Get-OneShot
+  if($armed -ne $numbers[0]){throw ('The firmware did not keep the one-time boot slot (it reads back {0}); use the F8 menu once.' -f $armed)}
+  return $numbers[0]
+}
+function Clear-OneShot{
+  try{if($null -ne (Get-OneShot)){[GuUefi.Nvram]::Write('BootNext',$null)}}catch{}
+}
+function Test-OneShotPending{
+  try{
+    $numbers=@(Find-BootNumber $entryName)
+    if($numbers.Count -ne 1){return $null}
+    return ((Get-OneShot) -eq $numbers[0])
+  }catch{return $null}
+}
+
 # --- read-only state, measurement and baseline -----------------------------
 
 function Test-Admin{
   $id=[Security.Principal.WindowsIdentity]::GetCurrent()
   return ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+function AssertAdmin([string]$What){
+  if(!(Test-Admin)){throw ('Administrator rights are required to '+$What+'. Run this in an elevated PowerShell, or let the window ask for it.')}
 }
 
 function Get-Benchmark{
@@ -167,6 +322,7 @@ function Read-Baseline{
 }
 
 function Get-GpuUnlockStatus{
+  $admin=Test-Admin
   $board=(Get-CimInstance Win32_BaseBoard).Product
   $bios=(Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion
   $gpu=@(Get-CimInstance Win32_PnPEntity | Where-Object {$_.DeviceID -match '^PCI\\VEN_10DE&DEV_2504'})
@@ -174,14 +330,17 @@ function Get-GpuUnlockStatus{
   $id=$null
   $order=@()
   $entryLast=$false
+  $entryKnown=$false
   try{
     $id=EntryId
     $order=Order (Bcd @('/enum','{fwbootmgr}'))
     $entryLast=($id -and $order.Count -gt 0 -and $order[-1] -eq $id)
+    $entryKnown=$true
   }catch{$id=$null}
   $last=$null
   $final=''
   $logs=0
+  $partitionError=''
   try{
     $dir=Join-Path (Target) $logDir
     $found=@(Get-ChildItem -LiteralPath $dir -Filter 'HLS*.TXT' -ErrorAction Stop | Sort-Object Name)
@@ -192,7 +351,8 @@ function Get-GpuUnlockStatus{
       $report=$(if($runs.Count){Join-Path (Join-Path $dir $runs[-1].Name) 'REPORT.TXT'}else{''})
       if(Test-Path -LiteralPath $report){$final=Select-String -LiteralPath $report -Pattern '^FINAL ' | Select-Object -Last 1 | ForEach-Object {$_.Line}}
     }
-  }catch{}
+  }catch{$partitionError=$_.Exception.Message}
+  $oneShot=$(if($admin){Test-OneShotPending}else{$null})
   $runOk=[bool]($last -and (Get-Content -LiteralPath $last.FullName -Raw) -match 'original-unlock-return status=0x0000000000000000' -and $final -match 'stage=transaction' -and $final -match 'attempted=1')
   $baseline=Read-Baseline
   return [pscustomobject]@{
@@ -202,11 +362,14 @@ function Get-GpuUnlockStatus{
     Gpu=$(if($gpu.Count){$gpu[0].Name}else{''})
     GpuOk=($gpu.Count -eq 1)
     SecureBoot=$secureBoot
-    Admin=(Test-Admin)
+    Admin=$admin
     EntryRegistered=[bool]$id
     EntryId=$id
+    EntryKnown=$entryKnown
     EntryLast=$entryLast
     Automatic=[bool]($id -and $order.Count -gt 0 -and $order[0] -eq $id)
+    OneShot=$oneShot
+    PartitionError=$partitionError
     Logs=$logs
     LastLog=$(if($last){$last.Name}else{''})
     LastLogTime=$(if($last){$last.LastWriteTime.ToString('yyyy-MM-dd HH:mm')}else{''})
@@ -220,21 +383,25 @@ function Get-GpuUnlockStatus{
 }
 
 function Format-Status($S){
-  $sb=$(if($S.SecureBoot -eq $true){'on (the unsigned EFI cannot run)'}elseif($S.SecureBoot -eq $false){'off'}else{'unknown (needs administrator)'})
+  $sb=$(if($S.SecureBoot -eq $true){'ON (the unsigned EFI cannot run)'}elseif($S.SecureBoot -eq $false){'off'}else{'unknown (needs administrator)'})
   $entry=$(if($S.EntryRegistered){$S.EntryId+' last in the F8 menu'}else{'not registered'})
   if($S.EntryRegistered -and !$S.EntryLast){$entry=$S.EntryId+' registered, not last in the F8 menu'}
   if($S.Automatic){$entry=$S.EntryId+' automatic (first, Windows second)'}
+  if(!$S.EntryKnown){$entry='unknown (needs administrator)'}
   $run=$(if($S.LastLog){$S.LastLog+' at '+$S.LastLogTime}else{'never ran here'})
   if($S.Stage){$run=$run+' - stage='+$S.Stage+' attempted='+([int]$S.Attempted)}
   $base=$(if($S.BaselineFp16){(('{0:N1} TFLOPS recorded at {1}' -f $S.BaselineFp16,$S.BaselineUtc))}else{'not recorded (run -Baseline on a clean boot)'})
+  $next=$(if($S.OneShot -eq $true){'armed: the next start unlocks once, then Windows'}elseif($S.OneShot -eq $false){'Windows as usual (activate to arm it)'}else{'unknown (needs administrator)'})
+  $logs=$(if(!$S.PartitionError){$S.Logs+' on the unlock partition'}elseif(!$S.Admin){'needs administrator'}else{'not read: '+$S.PartitionError})
   $lines=@(
     ('machine:     {0} BIOS {1} {2}' -f $S.Machine,$S.Bios,$(if($S.MachineOk){'(supported)'}else{'(NOT the reviewed machine)'})),
     ('gpu:         {0} {1}' -f $(if($S.Gpu){$S.Gpu}else{'10de:2504 not found'}),$(if($S.GpuOk){'(supported)'}else{'(check the card)'})),
     ('secure boot: '+$sb),
-    ('admin:       '+$(if($S.Admin){'yes'}else{'no (activate and deactivate need it)'})),
+    ('admin:       '+$(if($S.Admin){'yes'}else{'no - reading the partition and changing boot need it'})),
     ('entry:       '+$entry),
+    ('next start:  '+$next),
     ('last run:    '+$run),
-    ('logs:       '+$S.Logs+' on the unlock partition'),
+    ('logs:        '+$logs),
     ('baseline:    '+$base)
   )
   return ($lines -join "`n")
@@ -260,6 +427,7 @@ function Invoke-Verify{
   if(!$ok){
     Write-Output 'RESULT: the unlock did NOT complete on the last run.'
     Write-Output 'Nothing was changed on the card unless attempted=1; power cycle and read the log above.'
+    if((Test-OneShotPending) -eq $true){Write-Output 'The next start is already armed: restart this PC to run the unlock.'}
     $script:LastVerify=[pscustomobject]@{Ok=$false;Bench=$null}
     return
   }
@@ -284,6 +452,7 @@ function Invoke-Verify{
 }
 
 function Invoke-Baseline{
+  AssertAdmin ('save the baseline in '+$stateDir)
   AssertMachine
   AssertSecureBootOff
   $bench=Get-Benchmark
@@ -300,6 +469,7 @@ function Invoke-Baseline{
     Fp32=[math]::Round($bench.Fp32,2)
     N=$benchN
     Reps=$benchReps
+    Source='measured'
     MeasuredUtc=$now.ToString('o')
     BootUtc=((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'))
   } | ConvertTo-Json | Set-Content -LiteralPath $baselineFile -Encoding utf8
@@ -307,9 +477,62 @@ function Invoke-Baseline{
   Write-Output 'Boot the unlock entry and run -Verify to see the measured gain.'
 }
 
+# A hand-entered reference: the same shape, marked so it is never mistaken for
+# a measurement of this machine.
+function Save-BaselineValue([double]$Fp16){
+  AssertAdmin ('save the baseline in '+$stateDir)
+  if($Fp16 -le 0){throw 'The baseline must be a positive number of TFLOPS'}
+  [void][IO.Directory]::CreateDirectory($stateDir)
+  [ordered]@{
+    Gpu='NVIDIA GeForce RTX 3060 12GB (10de:2504)'
+    Fp16=[math]::Round($Fp16,2)
+    Tf32=$null
+    Fp32=$null
+    N=$benchN
+    Reps=$benchReps
+    Source='manual'
+    MeasuredUtc=((Get-Date).ToUniversalTime().ToString('o'))
+    BootUtc=''
+  } | ConvertTo-Json | Set-Content -LiteralPath $baselineFile -Encoding utf8
+  Write-Output ('baseline set by hand: {0:N2} TFLOPS FP16 ({1})' -f $Fp16,$baselineFile)
+}
+function Remove-Baseline{
+  AssertAdmin 'remove the baseline'
+  if(!(Test-Path -LiteralPath $baselineFile)){Write-Output 'No baseline is recorded.';return}
+  Remove-Item -LiteralPath $baselineFile -Force
+  Write-Output 'Baseline removed; -Verify and the window report the measured rate without a reference.'
+}
+
 # --- mutations -------------------------------------------------------------
 
+# Arms the firmware's one-time slot and turns Fast Startup off: a hybrid
+# shutdown resumes the old session with the card already initialised, so the
+# start that runs the unlock has to be a full one.
+function Invoke-ArmNextBoot{
+  AssertAdmin 'arm the next start'
+  $id=EntryId
+  if(!$id){throw 'No unlock entry is registered: run -Activate first'}
+  $number=Set-OneShot $id
+  $state=LoadState
+  if(!$state){
+    $state=[ordered]@{EntryId=$id;Path=$entryPath;BootOrderBefore=(Order (Bcd @('/enum','{fwbootmgr}')));HiberbootBefore=(ReadHiber);Mode='one-shot';HardwareTested=$true}
+  } else {
+    if(!($state.PSObject.Properties.Name -contains 'HiberbootBefore')){$state|Add-Member -NotePropertyName HiberbootBefore -NotePropertyValue (ReadHiber)}
+    $state.Mode='one-shot'
+  }
+  SetHiber @{Exists=$true;Value=0}
+  SaveState $state
+  return $number
+}
+function Invoke-RestartNow([int]$Seconds=20){
+  Write-Output ('Restarting in {0} seconds: the next start runs the unlock before Windows.' -f $Seconds)
+  Write-Output 'Save your work now. To cancel: shutdown /a'
+  & shutdown.exe /r /t $Seconds /c 'Cold start for the NVIDIA Ampere unlock'
+  if($LASTEXITCODE -ne 0){throw ('The restart request failed (exit {0}); restart the PC yourself when you are ready.' -f $LASTEXITCODE)}
+}
+
 function Invoke-Deactivate{
+  AssertAdmin 'remove the unlock entry'
   AssertMachine
   $root=Target
   $id=EntryId
@@ -317,6 +540,7 @@ function Invoke-Deactivate{
   $before=Bcd @('/enum','{fwbootmgr}')
   $order=Order $before
   $state=LoadState
+  Clear-OneShot
   Invoke-AutomaticTransition -Steps @(
     {[void](Bcd @('/delete',$id))},
     {SetOrder @($order | Where-Object {$_ -ne $id})}
@@ -335,6 +559,8 @@ function Invoke-Deactivate{
 }
 
 function Invoke-Activate([switch]$Automatic){
+  $script:LastActivate=$false
+  AssertAdmin 'register the unlock entry'
   AssertMachine
   AssertSecureBootOff
   $root=Target
@@ -423,9 +649,24 @@ function Invoke-Activate([switch]$Automatic){
     Write-Output 'Automatic mode: the unlock runs at every boot before Windows. Fast Startup is off.'
   }
 
+  $script:LastActivate=$true
   Write-Output ''
-  Write-Output 'Next: restart, open the firmware boot menu (F8 on this board) and pick'
-  Write-Output ('  "{0}"' -f $entryName)
+  if(!$Automatic){
+    # Registered at the end of the F8 menu above; the one-time slot is what
+    # makes the next start run it without touching any menu.
+    try{
+      $script:OneShotNumber=Invoke-ArmNextBoot
+      $script:OneShotArmed=$true
+      Write-Output ('Next start is armed: the firmware runs "{0}" once, then Windows as usual.' -f $entryName)
+      Write-Output 'Fast Startup is off so that start is a full boot; the entry is still in F8.'
+    } catch {
+      $script:OneShotArmed=$false
+      Write-Output ('Could not arm the next start: '+$_.Exception.Message)
+      Write-Output 'Use the F8 menu once: restart, press F8 and pick the entry above.'
+    }
+  } else {
+    Write-Output 'Next: restart. Every start runs the unlock before Windows, with no menu.'
+  }
   Write-Output 'The screen goes dark after the release; Windows brings the card back.'
   Write-Output 'Then run: .\GpuUnlock.ps1 -Verify'
   Write-Output 'To undo everything: .\GpuUnlock.ps1 -Deactivate  (and a full power-off)'
@@ -451,7 +692,7 @@ function Show-GpuUnlockWindow{
 
   $form=New-Object System.Windows.Forms.Form
   $form.Text='NVIDIA Ampere Unlock - RTX 3060'
-  $form.ClientSize=New-Object System.Drawing.Size(760,600)
+  $form.ClientSize=New-Object System.Drawing.Size(760,640)
   $form.StartPosition='CenterScreen'
   $form.FormBorderStyle='FixedSingle'
   $form.MaximizeBox=$false
@@ -466,26 +707,39 @@ function Show-GpuUnlockWindow{
   $badge.Text='CHECKING'
   $form.Controls.Add($badge)
 
-  $captions=@('Machine','GPU','Secure Boot','Boot entry','Last attempt','Transaction','Tensor rate')
+  $good=[System.Drawing.Color]::FromArgb(22,120,60)
+  $bad=[System.Drawing.Color]::FromArgb(170,32,32)
+  $warn=[System.Drawing.Color]::FromArgb(160,95,0)
+  $plain=[System.Drawing.Color]::FromArgb(30,30,30)
+  $quiet=[System.Drawing.Color]::FromArgb(110,110,110)
+
+  $captions=@('Machine','GPU','Secure Boot','Administrator','Boot entry','Next start','Last attempt','Transaction','Tensor rate')
   $values=@()
   for($i=0;$i -lt $captions.Count;$i++){
     $key=New-Object System.Windows.Forms.Label
     $key.Text=$captions[$i]
-    $key.Location=New-Object System.Drawing.Point(20,(78+($i*26)))
+    $key.Location=New-Object System.Drawing.Point(20,(72+($i*24)))
     $key.Size=New-Object System.Drawing.Size(120,20)
     $key.Font=New-Object System.Drawing.Font('Segoe UI',9,[System.Drawing.FontStyle]::Bold)
     $key.ForeColor=[System.Drawing.Color]::FromArgb(70,70,70)
     $form.Controls.Add($key)
     $v=New-Object System.Windows.Forms.Label
-    $v.Location=New-Object System.Drawing.Point(145,(78+($i*26)))
+    $v.Location=New-Object System.Drawing.Point(145,(72+($i*24)))
     $v.Size=New-Object System.Drawing.Size(600,20)
     $form.Controls.Add($v)
     $values+=$v
   }
 
+  $banner=New-Object System.Windows.Forms.Label
+  $banner.Location=New-Object System.Drawing.Point(20,364)
+  $banner.Size=New-Object System.Drawing.Size(720,22)
+  $banner.ForeColor=$warn
+  $banner.Text=$(if($admin){''}else{'Not elevated: everything except MEASURE needs administrator (Windows hides the unlock partition). Each button asks for it.'})
+  $form.Controls.Add($banner)
+
   $out=New-Object System.Windows.Forms.TextBox
-  $out.Location=New-Object System.Drawing.Point(20,330)
-  $out.Size=New-Object System.Drawing.Size(720,236)
+  $out.Location=New-Object System.Drawing.Point(20,390)
+  $out.Size=New-Object System.Drawing.Size(720,200)
   $out.Multiline=$true
   $out.ReadOnly=$true
   $out.ScrollBars='Vertical'
@@ -495,38 +749,42 @@ function Show-GpuUnlockWindow{
   $out.Text='Press VERIFY to read the last run and measure the card.'
   $form.Controls.Add($out)
 
-  $banner=New-Object System.Windows.Forms.Label
-  $banner.Location=New-Object System.Drawing.Point(20,296)
-  $banner.Size=New-Object System.Drawing.Size(720,26)
-  $banner.ForeColor=[System.Drawing.Color]::FromArgb(150,60,0)
-  $banner.Text=$(if($admin){''}else{'Not elevated: VERIFY and MEASURE work; ACTIVATE and DEACTIVATE will ask for administrator.'})
-  $form.Controls.Add($banner)
-
   $refresh={
     if($script:LastVerify -and $script:LastVerify.Bench -and $script:LastVerify.Bench.Fp16 -gt 0){$state.Bench=$script:LastVerify.Bench}
     $s=Get-GpuUnlockStatus
     $values[0].Text=('{0} - BIOS {1}{2}' -f $s.Machine,$s.Bios,$(if($s.MachineOk){''}else{'  (NOT the reviewed machine)'}))
+    $values[0].ForeColor=$(if($s.MachineOk){$plain}else{$bad})
     $values[1].Text=('{0}{1}' -f $(if($s.Gpu){$s.Gpu}else{'10de:2504 not found'}),$(if($s.GpuOk){'  (10de:2504)'}else{'  (check the card)'}))
-    $values[2].Text=$(if($s.SecureBoot -eq $true){'ON - the unsigned EFI cannot run'}elseif($s.SecureBoot -eq $false){'off'}else{'unknown (needs administrator)'})
-    if($s.Automatic){$values[3].Text=('{0}  automatic: first, Windows second' -f $s.EntryId)}
-    elseif($s.EntryRegistered){$values[3].Text=('{0}{1}' -f $s.EntryId,$(if($s.EntryLast){'  last in the F8 menu (manual)'}else{'  registered, not last in the F8 menu'}))}
-    else{$values[3].Text='not registered'}
-    $values[4].Text=$(if($s.LastLog){'{0} at {1}' -f $s.LastLog,$s.LastLogTime}else{'never ran on this machine'})
-    $values[5].Text=$(if($s.Stage){'stage={0}  attempted={1}' -f $s.Stage,[int]$s.Attempted}else{'no report yet'})
+    $values[1].ForeColor=$(if($s.GpuOk){$plain}else{$bad})
+    # Off is what this EFI needs; on is the one thing that stops it.
+    $values[2].Text=$(if($s.SecureBoot -eq $true){'ON - blocks this unsigned EFI; turn it off in firmware'}elseif($s.SecureBoot -eq $false){'off - this EFI can run'}else{'unknown - needs administrator'})
+    $values[2].ForeColor=$(if($s.SecureBoot -eq $true){$bad}elseif($s.SecureBoot -eq $false){$good}else{$warn})
+    $values[3].Text=$(if($s.Admin){'yes'}else{'no - reading the partition and changing boot need it'})
+    $values[3].ForeColor=$(if($s.Admin){$plain}else{$warn})
+    if(!$s.EntryKnown){$values[4].Text='unknown - needs administrator';$values[4].ForeColor=$warn}
+    elseif($s.Automatic){$values[4].Text=('{0}  automatic: first, Windows second' -f $s.EntryId);$values[4].ForeColor=$good}
+    elseif($s.EntryRegistered){$values[4].Text=('{0}{1}' -f $s.EntryId,$(if($s.EntryLast){'  last in the F8 menu (manual)'}else{'  registered, not last in the F8 menu'}));$values[4].ForeColor=$plain}
+    else{$values[4].Text='not registered';$values[4].ForeColor=$quiet}
+    $values[5].Text=$(if($s.OneShot -eq $true){'armed: the unlock runs once, then Windows'}elseif($s.OneShot -eq $false){'Windows as usual - ACTIVATE arms it'}else{'unknown - needs administrator'})
+    $values[5].ForeColor=$(if($s.OneShot -eq $true){$good}elseif($s.OneShot -eq $false){$quiet}else{$warn})
+    $values[6].Text=$(if($s.LastLog){'{0} at {1}' -f $s.LastLog,$s.LastLogTime}else{'never ran on this machine'})
+    $values[6].ForeColor=$(if($s.LastLog){$plain}else{$quiet})
+    $values[7].Text=$(if($s.Stage){'stage={0}  attempted={1}' -f $s.Stage,[int]$s.Attempted}else{'no report yet'})
+    $values[7].ForeColor=$(if(!$s.Stage){$quiet}elseif($s.RunOk){$good}else{$bad})
     if($state.Bench -and $state.Bench.Fp16 -gt 0){
       $text=('{0:N1} TFLOPS FP16 / {1:N1} TF32' -f $state.Bench.Fp16,$state.Bench.Tf32)
       if($s.BaselineFp16 -gt 0){$text+=(('   ({0:+0;-0}% vs baseline {1:N1})' -f ((($state.Bench.Fp16/$s.BaselineFp16)-1)*100),$s.BaselineFp16))}
-      elseif(!$s.RunOk){}else{$text+='   (no baseline yet: run -Baseline on a clean boot)'}
-      $values[6].Text=$text
+      elseif(!$s.RunOk){}else{$text+='   (no baseline yet: press BASELINE on a clean boot)'}
+      $values[8].Text=$text
     } elseif($s.BaselineFp16){
-      $values[6].Text=('not measured this window   (baseline {0:N1} TFLOPS)' -f $s.BaselineFp16)
+      $values[8].Text=('not measured this window   (baseline {0:N1} TFLOPS)' -f $s.BaselineFp16)
     } else {
-      $values[6].Text='not measured yet'
+      $values[8].Text='not measured yet'
     }
     $verdict=$(if($state.Bench){Get-UnlockVerdict $state.Bench.Fp16}else{'unknown'})
     if($verdict -eq 'unlocked'){
       $badge.Text='UNLOCKED - full tensor rate'
-      $badge.BackColor=[System.Drawing.Color]::FromArgb(22,120,60)
+      $badge.BackColor=$good
       $badge.ForeColor=[System.Drawing.Color]::White
     } elseif($verdict -eq 'locked'){
       $badge.Text='LOCKED - GeForce tensor rate'
@@ -541,12 +799,16 @@ function Show-GpuUnlockWindow{
       $badge.BackColor=[System.Drawing.Color]::FromArgb(210,210,210)
       $badge.ForeColor=[System.Drawing.Color]::FromArgb(60,60,60)
     }
+    $restart.Enabled=[bool]$s.EntryRegistered
+    $values[8].ForeColor=$(if($verdict -eq 'unlocked'){$good}elseif($verdict -eq 'locked'){$bad}else{$quiet})
+    $restartHint.Text=$(if($s.OneShot -eq $true){'Armed: restart now and the unlock runs before Windows.'}elseif($s.EntryRegistered){'Arms the next start and restarts it, so no F8 and no firmware menu.'}else{'Activate first: there is no entry to boot.'})
+    $restartHint.ForeColor=$(if($s.OneShot -eq $true){$good}elseif($s.EntryRegistered){$plain}else{$quiet})
   }
 
   $run={
-    param([string]$Label,[scriptblock]$Action,[switch]$NeedsAdmin)
+    param([string]$Label,[scriptblock]$Action,[switch]$NeedsAdmin,[string]$ElevateAs)
     if($NeedsAdmin -and !$admin){
-      Restart-Elevated $Label
+      Restart-Elevated $(if($ElevateAs){$ElevateAs}else{$Label})
       $form.Close()
       return
     }
@@ -568,7 +830,7 @@ function Show-GpuUnlockWindow{
   function New-ActionButton([string]$Text,[int]$X,[int]$Width,[scriptblock]$OnClick){
     $b=New-Object System.Windows.Forms.Button
     $b.Text=$Text
-    $b.Location=New-Object System.Drawing.Point($X,258)
+    $b.Location=New-Object System.Drawing.Point($X,292)
     $b.Size=New-Object System.Drawing.Size($Width,28)
     $b.UseVisualStyleBackColor=$true
     $b.Add_Click($OnClick)
@@ -576,13 +838,96 @@ function Show-GpuUnlockWindow{
     return $b
   }
 
-  [void](New-ActionButton 'VERIFY' 20 100 { & $run 'Verify' { Invoke-Verify } })
-  [void](New-ActionButton 'MEASURE' 128 90 { & $run 'Measure' { $b=Get-Benchmark; if(!$b){'Tensor benchmark not built; see docs/BENCHMARK.en.md'}else{$state.Bench=$b; $b.Raw; ('verdict: '+ (Get-UnlockVerdict $b.Fp16))} } })
-  [void](New-ActionButton 'ACTIVATE' 226 90 { & $run 'Activate' { Invoke-Activate } -NeedsAdmin })
+  # The baseline is configurable three ways: measure it here, keep a value
+  # measured elsewhere, or forget it and go back to the measured rate alone.
+  function New-BaselineDialog{
+    $current=Read-Baseline
+    $d=New-Object System.Windows.Forms.Form
+    $d.Text='Baseline - locked reference rate'
+    $d.ClientSize=New-Object System.Drawing.Size(470,196)
+    $d.StartPosition='CenterParent'
+    $d.FormBorderStyle='FixedDialog'
+    $d.MaximizeBox=$false
+    $d.MinimizeBox=$false
+    $d.Font=$form.Font
+    $info=New-Object System.Windows.Forms.Label
+    $info.Location=New-Object System.Drawing.Point(14,12)
+    $info.Size=New-Object System.Drawing.Size(440,66)
+    $info.Text=$(if($current){('Recorded: {0:N2} TFLOPS FP16 ({1})' -f [double]$current.Fp16,(''+$current.MeasuredUtc).Substring(0,[Math]::Min(16,(''+$current.MeasuredUtc).Length)))}else{'No baseline yet. It is the locked rate of this card, measured once on a clean boot with the unlock entry not used.'})
+    $d.Controls.Add($info)
+    $label=New-Object System.Windows.Forms.Label
+    $label.Location=New-Object System.Drawing.Point(14,78)
+    $label.Size=New-Object System.Drawing.Size(200,18)
+    $label.Text='Value by hand (TFLOPS FP16):'
+    $label.Font=New-Object System.Drawing.Font('Segoe UI',8)
+    $d.Controls.Add($label)
+    $box=New-Object System.Windows.Forms.TextBox
+    $box.Location=New-Object System.Drawing.Point(14,98)
+    $box.Size=New-Object System.Drawing.Size(120,22)
+    if($current){$box.Text=('{0}' -f [double]$current.Fp16)}
+    $d.Controls.Add($box)
+    $d.Tag=@{Action=$null;Value=0.0}
+    function New-DialogButton([string]$Text,[int]$X,[int]$Width,[scriptblock]$OnClick){
+      $b=New-Object System.Windows.Forms.Button
+      $b.Text=$Text
+      $b.Location=New-Object System.Drawing.Point($X,142)
+      $b.Size=New-Object System.Drawing.Size($Width,30)
+      $b.UseVisualStyleBackColor=$true
+      $b.Add_Click($OnClick)
+      $d.Controls.Add($b)
+    }
+    New-DialogButton 'MEASURE NOW' 14 132 {$d.Tag=@{Action='measure'};$d.Close()}
+    New-DialogButton 'SAVE VALUE' 152 116 {
+      $text=$box.Text.Trim().Replace(',','.')
+      [double]$value=0
+      if(![double]::TryParse($text,[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$value) -or $value -le 0){
+        [void][System.Windows.Forms.MessageBox]::Show('Enter the locked rate in TFLOPS, for example 24.8.','Baseline','OK','Warning')
+        return
+      }
+      $d.Tag=@{Action='save';Value=$value};$d.Close()
+    }
+    New-DialogButton 'FORGET' 274 88 {$d.Tag=@{Action='forget'};$d.Close()}
+    New-DialogButton 'CLOSE' 368 88 {$d.Close()}
+    return $d
+  }
+  function Show-BaselineDialog{
+    $d=New-BaselineDialog
+    [void]$d.ShowDialog($form)
+    $tag=$d.Tag
+    $d.Dispose()
+    return $tag
+  }
+
+  $baselineClick={
+    if($admin){$pick=Show-BaselineDialog}else{$pick=@{Action='measure'}}
+    if(!$pick -or !$pick.Action){return}
+    switch($pick.Action){
+      'measure'{ & $run 'Baseline' { Invoke-Baseline } -NeedsAdmin }
+      'save'   { & $run 'Baseline (by hand)' { Save-BaselineValue $pick.Value } -NeedsAdmin -ElevateAs 'Baseline' }
+      'forget' { & $run 'Baseline (forget)' { Remove-Baseline } -NeedsAdmin -ElevateAs 'Baseline' }
+    }
+  }
+
+  # After activation the next start runs the unlock once; the restart is the
+  # only step a person still has to take, so it is offered right here.
+  $restartFlow={
+    $answer=[System.Windows.Forms.MessageBox]::Show(
+      "Restart now?`r`n`r`nThe next start runs the unlock once, then Windows. Save your work: the restart is in 20 seconds (shutdown /a cancels).",
+      'Restart now','YesNo','Question')
+    if($answer -eq 'Yes'){ & $run 'Restart' { [void](Invoke-ArmNextBoot); Invoke-RestartNow } -NeedsAdmin }
+  }
+
+  [void](New-ActionButton 'VERIFY' 20 96 { & $run 'Verify' { Invoke-Verify } -NeedsAdmin })
+  [void](New-ActionButton 'MEASURE' 122 80 { & $run 'Measure' { $b=Get-Benchmark; if(!$b){'Tensor benchmark not built; see docs/BENCHMARK.en.md'}else{$state.Bench=$b; $b.Raw; ('verdict: '+ (Get-UnlockVerdict $b.Fp16))} } })
+  [void](New-ActionButton 'BASELINE' 208 96 { & $baselineClick })
+  [void](New-ActionButton 'ACTIVATE' 310 88 {
+    & $run 'Activate' { Invoke-Activate } -NeedsAdmin
+    if($script:LastActivate){ & $restartFlow }
+  })
   $auto=New-Object System.Windows.Forms.CheckBox
   $auto.Text='also automatic'
-  $auto.Location=New-Object System.Drawing.Point(324,262)
-  $auto.Size=New-Object System.Drawing.Size(120,22)
+  $auto.Location=New-Object System.Drawing.Point(404,296)
+  $auto.Size=New-Object System.Drawing.Size(110,22)
   $form.Controls.Add($auto)
   $auto.Add_Click({
     if(!$auto.Checked){return}
@@ -590,23 +935,49 @@ function Show-GpuUnlockWindow{
       "Automatic mode puts the unlock first and Windows second, and turns Fast Startup off.`r`n`r`nContinue?",
       'Automatic boot','YesNo','Question')
     if($answer -ne 'Yes'){$auto.Checked=$false;return}
-    & $run 'Activate automatic' { Invoke-Activate -Automatic } -NeedsAdmin
+    & $run 'Activate automatic' { Invoke-Activate -Automatic } -NeedsAdmin -ElevateAs 'Automatic'
   })
-  [void](New-ActionButton 'DEACTIVATE' 452 100 {
+  [void](New-ActionButton 'DEACTIVATE' 520 92 {
     $answer=[System.Windows.Forms.MessageBox]::Show(
       "Remove the boot entry and restore the previous order?`r`n`r`nImages stay on the unlock partition and a full power-off returns the card to factory state.",
       'Deactivate','YesNo','Question')
     if($answer -eq 'Yes'){ & $run 'Deactivate' { Invoke-Deactivate } -NeedsAdmin }
   })
-  [void](New-ActionButton 'LOGS' 560 88 {
-    try{Start-Process explorer.exe (Join-Path (Target) $logDir)}catch{$out.AppendText(('ERROR: '+$_.Exception.Message)+"`r`n")}
+  [void](New-ActionButton 'LOGS' 618 60 {
+    $dir=(DriveLetter)+':\'+$logDir
+    try{
+      if($admin){Start-Process explorer.exe $dir}
+      else{Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-Command',("Start-Process explorer.exe '"+$dir+"'"))}
+    } catch {$out.AppendText(('ERROR: '+$_.Exception.Message)+"`r`n")}
   })
-  [void](New-ActionButton 'HELP' 656 84 {
+  [void](New-ActionButton 'HELP' 684 52 {
     try{Start-Process (Join-Path $repo 'docs/USER-GUIDE.es.md')}catch{$out.AppendText(('ERROR: '+$_.Exception.Message)+"`r`n")}
   })
 
+  $restart=New-Object System.Windows.Forms.Button
+  $restart.Text='RESTART FOR UNLOCK'
+  $restart.Location=New-Object System.Drawing.Point(20,326)
+  $restart.Size=New-Object System.Drawing.Size(160,30)
+  $restart.Font=New-Object System.Drawing.Font('Segoe UI',9,[System.Drawing.FontStyle]::Bold)
+  $restart.UseVisualStyleBackColor=$true
+  $restart.Enabled=$false
+  $restart.Add_Click({
+    $answer=[System.Windows.Forms.MessageBox]::Show(
+      "Restart in 20 seconds with the unlock armed for this start?`r`n`r`nSave your work first: shutdown /a cancels.",
+      'Restart for unlock','YesNo','Question')
+    if($answer -eq 'Yes'){ & $run 'Restart' { [void](Invoke-ArmNextBoot); Invoke-RestartNow } -NeedsAdmin }
+  })
+  $form.Controls.Add($restart)
+
+  $restartHint=New-Object System.Windows.Forms.Label
+  $restartHint.Location=New-Object System.Drawing.Point(190,332)
+  $restartHint.Size=New-Object System.Drawing.Size(550,20)
+  $restartHint.ForeColor=$quiet
+  $restartHint.Text='Activate first: there is no entry to boot.'
+  $form.Controls.Add($restartHint)
+
   $foot=New-Object System.Windows.Forms.Label
-  $foot.Location=New-Object System.Drawing.Point(20,572)
+  $foot.Location=New-Object System.Drawing.Point(20,600)
   $foot.Size=New-Object System.Drawing.Size(720,18)
   $foot.ForeColor=[System.Drawing.Color]::FromArgb(90,90,90)
   $foot.Text='The unlock lives in the GPU firmware RAM only: a full power-off returns the card to factory state.'
@@ -615,10 +986,20 @@ function Show-GpuUnlockWindow{
   if($SelfCheck){
     $buttons=@($form.Controls | Where-Object {$_ -is [System.Windows.Forms.Button]})
     $names=@($buttons | ForEach-Object {$_.Text})
-    if($buttons.Count -ne 6 -or $names -notcontains 'VERIFY' -or $names -notcontains 'ACTIVATE' -or $names -notcontains 'DEACTIVATE'){throw ('GUI self-check failed: buttons '+($names -join ','))}
+    foreach($needed in @('VERIFY','MEASURE','BASELINE','ACTIVATE','DEACTIVATE','RESTART FOR UNLOCK','LOGS','HELP')){
+      if($names -notcontains $needed){throw ('GUI self-check failed: missing '+$needed+' in '+($names -join ','))}
+    }
+    if($values.Count -ne 9){throw 'GUI self-check failed: status rows'}
     if(!$out.Multiline -or !$out.ReadOnly){throw 'GUI self-check failed: output box'}
+    $dialog=New-BaselineDialog
+    if($dialog.Controls.Count -lt 7){throw 'GUI self-check failed: baseline dialog'}
+    $dialog.Dispose()
+    # Offline check of the firmware load-option parse that finds the boot slot.
+    $probe=[byte[]](0,0,0,0,0,0)+[Text.Encoding]::Unicode.GetBytes($entryName+[char]0)
+    if((Get-LoadOptionDescription $probe) -cne $entryName){throw 'GUI self-check failed: firmware load-option parsing'}
     & $refresh
     if($values[0].Text -notmatch 'BIOS'){throw 'GUI self-check failed: status rows were not filled'}
+    if($values[2].Text -notmatch 'off|ON|unknown'){throw 'GUI self-check failed: secure boot row'}
     if($badge.Text -eq 'CHECKING'){throw 'GUI self-check failed: the badge was never updated'}
     Write-Output ('GUI OK ('+$badge.Text+')')
     $form.Dispose()
@@ -629,11 +1010,13 @@ function Show-GpuUnlockWindow{
     & $refresh
     if($StartAction){
       switch($StartAction){
-        'Verify'    { & $run 'Verify' { Invoke-Verify } }
+        'Verify'    { & $run 'Verify' { Invoke-Verify } -NeedsAdmin }
         'Measure'   { & $run 'Measure' { $b=Get-Benchmark; if($b){$state.Bench=$b; $b.Raw} } }
-        'Activate'  { & $run 'Activate' { Invoke-Activate } -NeedsAdmin }
+        'Baseline'  { & $baselineClick }
+        'Activate'  { & $run 'Activate' { Invoke-Activate } -NeedsAdmin; if($script:LastActivate){ & $restartFlow } }
         'Automatic' { & $run 'Activate automatic' { Invoke-Activate -Automatic } -NeedsAdmin }
         'Deactivate'{ & $run 'Deactivate' { Invoke-Deactivate } -NeedsAdmin }
+        'Restart'   { & $run 'Restart' { [void](Invoke-ArmNextBoot); Invoke-RestartNow } -NeedsAdmin }
       }
     }
   })
@@ -643,6 +1026,7 @@ function Show-GpuUnlockWindow{
 
 # --- dispatch ---------------------------------------------------------------
 
+try{
 if($Gui){
   Show-GpuUnlockWindow
   return
@@ -672,4 +1056,20 @@ if($Deactivate){
   return
 }
 
+if($Restart -and !$Activate){
+  [void](Invoke-ArmNextBoot)
+  Invoke-RestartNow
+  return
+}
+
 Invoke-Activate -Automatic:$Automatic
+if($Restart){Invoke-RestartNow}
+elseif(![Console]::IsInputRedirected){
+  $answer=Read-Host 'Restart now so the next start runs the unlock? [y/N]'
+  if($answer -match '^(?i)(y|yes|s|si|sí)$'){Invoke-RestartNow}
+}
+} catch {
+  # One clean line for the user, not a PowerShell stack trace.
+  [Console]::Error.WriteLine('ERROR: '+$_.Exception.Message)
+  exit 1
+}

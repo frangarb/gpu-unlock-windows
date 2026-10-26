@@ -20,8 +20,8 @@
     },
     {
       "path": "CHANGES.md",
-      "bytes": 9642,
-      "sha256": "99f15194d4f8aef59ed7dd5d01747cb4f01f1ebba6c86fe929657b2fcea57503"
+      "bytes": 10993,
+      "sha256": "9aa75c099907fd38288efcc4681e57533fc59a2d9c50a42bad742da5fc867ea3"
     },
     {
       "path": "GpuUnlock.cmd",
@@ -30,8 +30,8 @@
     },
     {
       "path": "GpuUnlock.ps1",
-      "bytes": 33330,
-      "sha256": "5ddb885f0c990840c0bbd4aebffcaf31aedeca711f1454f0fc5c144a2061aea0"
+      "bytes": 53164,
+      "sha256": "1d63b97b76211003ed2d01f8eb6fa0ebcd88d73c9c652fa3bed4483a47229c3c"
     },
     {
       "path": "LICENSE",
@@ -65,13 +65,13 @@
     },
     {
       "path": "README.md",
-      "bytes": 10003,
-      "sha256": "a5f62a4aa4701e02ead1118417c820fd808facd1fff76a2a9e5272a68c4854b2"
+      "bytes": 10491,
+      "sha256": "d42e4e0d884c329741e0575e064747b907879c6e8f2fa4720a2881c67da44c17"
     },
     {
       "path": "RELEASE-NOTES.md",
-      "bytes": 3281,
-      "sha256": "42e298b7d66b12d32947476f6b28e6912bb24f9f5bd2b6b1707fbcf0ae230b48"
+      "bytes": 4265,
+      "sha256": "31c5c0f673d82f02d4e7cbb326336ad62437ba34189264b707e21fa98ce3a789"
     },
     {
       "path": "RELEASE-v0.2.0.md",
@@ -3435,8 +3435,8 @@
     },
     {
       "path": "docs/USER-GUIDE.es.md",
-      "bytes": 5830,
-      "sha256": "9793f17e0b923db98c10d116ba4dd64e47ef796bf9e4e5eb1659861a56bda3f1"
+      "bytes": 8012,
+      "sha256": "a958b5db8fe1e6d726a506f1febbe7026d47250c1dc044917cd81fd1f2e9c4ac"
     },
     {
       "path": "efi_runtime.c",
@@ -4295,8 +4295,8 @@
     },
     {
       "path": "tools/test_update_source_manifest.py",
-      "bytes": 2193,
-      "sha256": "d26acf30c0f8ec3ac35335d9104405f5eb26ba2993d150ba8f42dd1c947e3cea"
+      "bytes": 2485,
+      "sha256": "eb9c79972ef306ad30afe335f938c8f3ae1849fc73e17fb72e736406e7766233"
     },
     {
       "path": "tools/update_source_manifest.py",

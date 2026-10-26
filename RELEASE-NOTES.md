@@ -1,5 +1,21 @@
 # Windows GPU UNLOCK — release history
 
+## v0.4.1 — 2026-10-25: one-time boot, baseline in the window, permissions
+
+- `GpuUnlock.ps1 -Activate` registers the entry **and arms the firmware's
+  one-time boot slot** (`BootNext`, read back after writing): the next start runs
+  the unlock with no F8 and no firmware menu, then Windows as usual. `-Restart`
+  (or the window's RESTART FOR UNLOCK) restarts with that slot armed and Fast
+  Startup off; `-Deactivate` cancels the slot and restores the previous order.
+- The window can record the locked baseline — measure, set a value by hand, or
+  forget it — and colours each row by consequence: green passes, red blocks,
+  orange unknown.
+- Every action that reads the unlock partition or changes the boot configuration
+  now says it needs administrator and asks for it, instead of reporting a wrong
+  partition. MEASURE and `-Status` still run unprivileged.
+- Source-only, same scope: one reviewed machine, no NVIDIA firmware, no EFI
+  binaries, no partition identifiers.
+
 ## v0.4.0 — 2026-10-25: GA106 RTX 3060 writes the unlock; end-user window
 
 The first release where a second, deliberately different machine **wrote** the

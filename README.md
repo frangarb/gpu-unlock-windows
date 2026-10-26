@@ -38,19 +38,25 @@ figures for this part instead of the GeForce rate.
 End-user tool for that machine — window, status or console:
 
 ```powershell
-.\GpuUnlock.cmd               # window: state, VERIFY/MEASURE, activate, deactivate
+.\GpuUnlock.cmd               # window: state, verify, baseline, activate, restart
 .\GpuUnlock.ps1 -Status       # one screen of state; add -Json for scripts
-.\GpuUnlock.ps1 -Activate     # stage the images and add the F8 entry
+.\GpuUnlock.ps1 -Activate     # stage images, add the entry, arm the next start
+.\GpuUnlock.ps1 -Restart      # arm the next start and restart now
 .\GpuUnlock.ps1 -Verify       # read the last log and measure the tensor rate
 .\GpuUnlock.ps1 -Baseline     # record the locked rate once, on a clean boot
 .\GpuUnlock.ps1 -Deactivate   # remove the entry, restore the boot order
 ```
 
 The window shows the same state read-only and runs the same functions as the
-console; only activate and deactivate ask for administrator. `-Baseline` stores
-the locked rate in `%ProgramData%\WindowsGPUUnlock\baseline.json` and refuses to
-save a number measured on an unlocked card, so `-Verify` reports the measured
-gain instead of a specification figure.
+console. Reading the unlock partition, changing the boot configuration and
+arming firmware NVRAM need an elevated shell — Windows hides the ESP from normal
+users — so those buttons say so and ask for administrator; `-Status` and the
+tensor measurement do not. `-Activate` also arms the firmware's one-time boot
+slot, so the next start runs the unlock with no F8 and no firmware menu and then
+returns to Windows; the window offers the restart and keeps a button for it.
+`-Baseline` stores the locked rate in `%ProgramData%\WindowsGPUUnlock\baseline.json`
+and refuses to save a number measured on an unlocked card, so `-Verify` reports
+the measured gain instead of a specification figure.
 
 [User guide (es)](docs/USER-GUIDE.es.md) · [Porting guide for other machines (es)](docs/PORTING.es.md)
 

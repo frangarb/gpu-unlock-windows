@@ -44,7 +44,12 @@ class ManifestTest(unittest.TestCase):
                          ['missing from the manifest: docs/A.md'])
 
     def test_symlink_is_refused(self):
-        (self.root / 'docs' / 'B.md').symlink_to('A.md')
+        try:
+            (self.root / 'docs' / 'B.md').symlink_to('A.md')
+        except OSError as error:
+            # Creating the fixture needs SeCreateSymbolicLinkPrivilege, which a
+            # plain user lacks; the refusal itself is still checked where it can be.
+            self.skipTest('this account cannot create symlinks: %s' % error)
         with self.assertRaises(ValueError):
             manifest.build(self.root, ['docs/B.md'])
 

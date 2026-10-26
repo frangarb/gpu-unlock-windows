@@ -30,41 +30,54 @@ tarjeta, porque después ese registro queda protegido hasta el próximo apagado.
 ## Uso
 
 Hay dos formas: la **ventana** (doble clic en `GpuUnlock.cmd`) o la **consola**.
-La ventana y la consola hacen exactamente lo mismo: la ventana sólo pide
-administrador al activar o desactivar.
+Las dos llaman a las mismas funciones, así que el resultado es idéntico.
+
+**Permisos.** Leer la partición de desbloqueo, tocar la configuración de arranque
+y armar el NVRAM del firmware necesitan una consola elevada: Windows esconde esa
+partición a los usuarios normales (`Get-Volume` devuelve un volumen sin ruta, y
+el error lo dice). `-Status` y la medición Tensor andan sin administrador. Si
+abrís la ventana sin privilegios lo avisa en naranja, y cada botón que lo
+necesita pide UAC y se reabre elevada.
 
 ### Ventana
 
 Doble clic en `GpuUnlock.cmd`. Muestra el estado leído de esta máquina —placa,
-tarjeta, Secure Boot, entrada de arranque, último intento y resultado de la
-transacción— y el rendimiento medido. Los botones:
+tarjeta, Secure Boot, administrador, entrada de arranque, próximo arranque,
+último intento, resultado de la transacción— y el rendimiento medido. Los
+botones:
 
 | Botón | Qué hace |
 |---|---|
 | **VERIFY** | Lee el último log y mide la tarjeta; el cartel pasa a UNLOCKED o LOCKED |
 | **MEASURE** | Sólo mide, sin leer el log |
-| **ACTIVATE** | Copia las imágenes y agrega la entrada al menú F8 |
-| **also automatic** | Además la pone primera y apaga Inicio Rápido |
+| **BASELINE** | Mide la línea base, guarda un valor a mano o la borra |
+| **ACTIVATE** | Copia las imágenes, agrega la entrada y **arma el próximo arranque**; después pregunta si reiniciar ahora |
+| **also automatic** | Además la deja primera en cada arranque y apaga Inicio Rápido |
 | **DEACTIVATE** | Borra la entrada y restaura el orden anterior |
+| **RESTART FOR UNLOCK** | Arma y reinicia en 20 s (`shutdown /a` cancela): el próximo arranque desbloquea |
 | **LOGS** | Abre la carpeta de logs de la partición |
 | **HELP** | Abre esta guía |
 
-Si la ventana se abre sin privilegios, dice `Not elevated` arriba; al tocar
-ACTIVATE o DEACTIVATE pide UAC y se reabre elevada.
+Las filas se pintan por consecuencia: **verde** cuando el estado deja pasar el
+desbloqueo (Secure Boot apagado, entrada registrada, próximo arranque armado,
+tarjeta a tasa completa), **rojo** cuando lo bloquea (Secure Boot encendido,
+transacción fallida, tarjeta a tasa GeForce) y **naranja** cuando falta el
+permiso para saberlo.
 
 ### Consola
 
-En PowerShell **como administrador**, desde la raíz del repositorio:
+En PowerShell, desde la raíz del repositorio:
 
 ```powershell
 # 0. Estado, sin tocar nada (también anda sin administrador).
 .\GpuUnlock.ps1 -Status          # -Status -Json para scripts
 
-# 1. Activar: copia las imágenes y agrega la entrada al menú de arranque (F8).
-.\GpuUnlock.ps1 -Activate
+# 1. Activar: copia las imágenes, registra la entrada y arma el próximo arranque.
+.\GpuUnlock.ps1 -Activate        # pregunta si reiniciar ahora
+.\GpuUnlock.ps1 -Activate -Restart   # sin preguntar: reinicia en 20 s
 
-# 2. Reiniciar, F8, elegir "NVIDIA Ampere Unlock - RTX 3060".
-#    La pantalla se apaga cuando se libera la consola; Windows la recupera.
+# 2. Si dijiste que no: reiniciá con RESTART FOR UNLOCK (ventana) o -Restart.
+#    No hace falta F8 ni entrar a la BIOS.
 
 # 3. Verificar: lee el último log y mide la tasa Tensor.
 .\GpuUnlock.ps1 -Verify
@@ -74,6 +87,21 @@ En PowerShell **como administrador**, desde la raíz del repositorio:
 y si la tarjeta mide como desbloqueada (≥ 35 TFLOPS en FP16→FP32). Si el arranque
 fue a Windows sin pasar por la entrada, el log viejo puede estar bien y la
 medición no: el script te lo dice explícitamente.
+
+### Qué significa "armado"
+
+ACTIVATE registra la entrada al final del menú F8 y además escribe el **BootNext**
+del firmware: una ranura de un solo uso que la propia UEFI consume y borra. El
+próximo arranque corre el desbloqueo y sigue a Windows, y desde el siguiente
+arranque todo vuelve a la normalidad sin que se haya tocado el orden de arranque.
+Para que ese arranque sea completo, ACTIVATE apaga el Inicio Rápido (una mezcla
+de apagado e hibernación reanudaría la sesión con la tarjeta ya inicializada;
+el Inicio Rápido se restaura al desactivar).
+
+Si el firmware rechaza la ranura (por ejemplo, porque no enumera esa ESP), la
+activación **no falla**: avisa y te deja el camino por F8. En ese caso, reiniciá,
+F8 y elegí la entrada; la pantalla se apaga cuando se libera la consola y Windows
+la recupera.
 
 ### Modo automático (opcional)
 
@@ -90,9 +118,10 @@ desbloqueo pasa a ocurrir en cada encendido sin abrir el menú.
 .\GpuUnlock.ps1 -Deactivate
 ```
 
-Borra la entrada y restaura el orden de arranque. Las imágenes quedan en la
-partición de observación, sin efecto. **Un apagado completo devuelve la tarjeta
-al estado de fábrica**: no hay nada escrito en la GPU, su BIOS ni el driver.
+Borra la entrada, cancela un arranque armado, restaura el orden de arranque y el
+Inicio Rápido previo. Las imágenes quedan en la partición de observación, sin
+efecto. **Un apagado completo devuelve la tarjeta al estado de fábrica**: no hay
+nada escrito en la GPU, su BIOS ni el driver.
 
 ## Qué esperar y qué puede salir mal
 
@@ -114,18 +143,20 @@ El README dice ~25 TFLOPS porque es la especificación de GeForce. Para tener el
 número **real de esta máquina**:
 
 1. Apagá por completo —no reinicies— y arrancá Windows **sin** elegir la entrada
-de desbloqueo (con Inicio Rápido apagado, un `shutdown /s /t 0` alcanza).
-2. Corré:
+de desbloqueo (con Inicio Rápido apagado, un `shutdown /s /t 0` alcanza).2. Corré `-Baseline`, o abrí la ventana y tocá **BASELINE**:
 
    ```powershell
    .\GpuUnlock.ps1 -Baseline
    ```
 
-   Guarda la medición en `%ProgramData%\WindowsGPUUnlock\baseline.json`. Si la
-tarjeta mide desbloqueada, **se niega** a guardar: no se puede registrar una
-línea base mala por error.
+   El botón abre el mismo tema con tres opciones: **MEASURE NOW** (mide en este
+   arranque), **SAVE VALUE** (guarda a mano un número medido en otro lado, por
+   ejemplo `24.8`) y **FORGET** (borra la referencia). Cualquiera de las dos
+   primeras escribe `%ProgramData%\WindowsGPUUnlock\baseline.json`. Medir en una
+   tarjeta desbloqueada **se rechaza**: no se puede registrar una línea base
+   mala por error; el valor a mano queda marcado como `Source: manual`.
 3. Desde ahí, `-Verify` y la ventana muestran el porcentaje real
-   (`+82% vs baseline 24.8`).
+   (`+82% vs baseline 24.9`).
 
 ## Cómo saber que de verdad está desbloqueada
 
