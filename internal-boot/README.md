@@ -17,5 +17,9 @@ registration/promotion adapter remain experimental.
 5. After actual manual/performance success, optionally use `-EnableAutomaticBoot -ConfirmedManualSuccess`.
 6. `Install.ps1 -RestoreWindowsFirst`: recovery independent of EFI/build files.
 
+An unprofiled machine (for example an RTX 3060) matches no profile and cannot
+arm anything. Record it first with the read-only discovery build:
+[DISCOVERY.en.md](../docs/DISCOVERY.en.md).
+
 Keep local config, install state and backups private. No firmware is distributed.
 GPL-2.0-only; root LICENSE and THIRD_PARTY_NOTICES.md apply.

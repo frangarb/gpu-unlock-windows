@@ -20,6 +20,15 @@
 #if defined(GU_SINGLE_RTX_CONSOLE) && !defined(GU_HEADLESS_RESEARCH) && (!defined(GU_DIAGNOSTIC_ONLY) || !defined(GU_CONSOLE_PREPARE) || defined(GU_FULL_UNLOCK) || defined(GU_AUTOMATIC_BOOT))
 #error Single RTX console research must remain a separate non-unlock build
 #endif
+/* On this topology the console child is created by the text-out consumer, so a
+ * rehearsal that releases it also loses the console and its input. Checks after
+ * that point accept a missing console; the verification build, which releases
+ * nothing, still requires one. */
+#if defined(GU_SINGLE_RTX_CONSOLE) && !defined(GU_CONSOLE_VERIFY_ONLY)
+#define GU_CONSOLE_LEAVES_WITH_CONSUMERS 1
+#else
+#define GU_CONSOLE_LEAVES_WITH_CONSUMERS 0
+#endif
 
 #define MAX_HANDLES 1024
 #define MAX_RECORDS 4096
@@ -34,6 +43,9 @@ typedef struct {
 } GRAPH;
 typedef struct {
   EFI_HANDLE Amd,Rtx,AmdPci,RtxPci,Console,Input,Error,OutAgent,GfxAgent;
+#if defined(GU_CONSOLE_EDID_ON_TARGET) && !GU_CONSOLE_AGGREGATE
+  EFI_HANDLE EdidAgent;
+#endif
 #if GU_CONSOLE_AGGREGATE
   EFI_HANDLE NvAgent,NvChildAgent,EdidAgent,ComboAgent,Agg;
   EFI_HANDLE AggCandidate,AggDriver;
@@ -60,13 +72,20 @@ static EFI_GUID InputGuid=EFI_SIMPLE_TEXT_INPUT_PROTOCOL_GUID;
 static EFI_GUID BindingGuid=EFI_DRIVER_BINDING_PROTOCOL_GUID,ImageGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID;
 static const EFI_GUID OutFile={0x628a497d,0x2bf6,0x4264,{0x87,0x41,0x06,0x9d,0xbd,0x33,0x99,0xd6}};
 static const EFI_GUID GfxFile={0x43e7abdd,0xe352,0x4cfb,{0xa2,0x30,0x4c,0xdc,0x1d,0x35,0x0e,0x5c}};
-#if GU_CONSOLE_AGGREGATE
+#if GU_CONSOLE_AGGREGATE || defined(GU_CONSOLE_EDID_ON_TARGET)
 static EFI_GUID EdidFoundGuid=EFI_EDID_DISCOVERED_PROTOCOL_GUID;
 static const EFI_GUID EdidFile={0xc7a7030c,0xc3d8,0x45ee,{0xbe,0xd9,0x5d,0x9e,0x76,0x76,0x29,0x53}};
+#endif
+#if GU_CONSOLE_AGGREGATE
 static const EFI_GUID ComboFile={0x55987e62,0x1df6,0x41d1,{0x90,0x62,0x33,0x4f,0xca,0xc3,0xe5,0x4d}};
 #endif
 static const UINT8 AmdPath[]={2,1,12,0,0xd0,0x41,3,10,0,0,0,0,1,1,6,0,1,8,1,1,6,0,0,0,2,3,8,0,0,3,1,128,127,255,4,0};
 static const UINT8 RtxPath[]={GU_RTX_PATH_BYTES};
+#ifdef GU_RTX_PATH_BYTES
+/* DisplayRoute compares 36 bytes; a truncated profile path must fail the build
+ * instead of reading past this array. */
+_Static_assert(sizeof RtxPath==36,"GU_RTX_PATH_BYTES is not the 36-byte endpoint path");
+#endif
 static BOOLEAN Bytes(const VOID *a,const VOID *b,UINTN n) {
   const UINT8 *x=a,*y=b;for(UINTN i=0;i<n;i++)if(x[i]!=y[i])return FALSE;return TRUE;
 }
@@ -330,6 +349,20 @@ static EFI_STATUS Consumers(EFI_SYSTEM_TABLE *t,PLAN *p,const GRAPH *g) {
     }
   }
   if(out!=1 || child!=1 || gfx!=1 || p->OutAgent==p->GfxAgent)return EFI_ACCESS_DENIED;
+#if defined(GU_CONSOLE_EDID_ON_TARGET)
+  /* This board's console does not ride on a splitter: the target carries the
+   * EDID-discovered protocol (1c0c34f6), owned BY_DRIVER by the runtime
+   * EDID/mouse driver that also registers the console's input protocols. Pin
+   * that third owner by its own image fingerprint, never by handle reuse. */
+  UINTN edid=0;
+  for(UINTN i=0;i<g->Count;i++) {
+    const EDGE *e=&g->Edges[i];
+    if(e->Handle!=p->Rtx || !GuGuidEqual(&e->Protocol,&EdidFoundGuid))continue;
+    if(e->Count!=1 || e->Attributes!=EFI_OPEN_PROTOCOL_BY_DRIVER || e->Controller!=p->Rtx)return EFI_ACCESS_DENIED;
+    p->EdidAgent=e->Agent;edid++;
+  }
+  if(edid!=1 || !p->EdidAgent || p->EdidAgent==p->OutAgent || p->EdidAgent==p->GfxAgent)return EFI_ACCESS_DENIED;
+#endif
   /* Each target binding may own other controllers, but its only RTX child
    * relationships must be exactly the reviewed TextOut/GOP edges above. */
   for(UINTN i=0;i<g->Count;i++) {
@@ -357,20 +390,28 @@ static EFI_STATUS Consumers(EFI_SYSTEM_TABLE *t,PLAN *p,const GRAPH *g) {
 #endif
   EFI_STATUS s=Driver(t->BootServices,p->OutAgent,&OutFile,GU_CONSOLE_TEXT_SIZE,GU_CONSOLE_TEXT_STOP,GU_CONSOLE_TEXT_VERSION,EfiBootServicesCode);
   if(s==EFI_SUCCESS)s=Driver(t->BootServices,p->GfxAgent,&GfxFile,GU_CONSOLE_GFX_SIZE,GU_CONSOLE_GFX_STOP,GU_CONSOLE_GFX_VERSION,EfiBootServicesCode);
+#if defined(GU_CONSOLE_EDID_ON_TARGET)
+  if(s==EFI_SUCCESS)s=Driver(t->BootServices,p->EdidAgent,&EdidFile,GU_EDID_IMAGE_SIZE,GU_EDID_STOP,1U,EfiRuntimeServicesCode);
+#endif
   return s;
 }
 #endif
-static EFI_STATUS Alive(EFI_SYSTEM_TABLE *t,PLAN *p) {
+/* consoleMayBeGone: a release can take this board's only console with it. The
+ * console identity is then only asserted while the very same console is still
+ * the system console; the GPU and graph checks below always run. */
+static EFI_STATUS Alive(EFI_SYSTEM_TABLE *t,PLAN *p,BOOLEAN consoleMayBeGone) {
+  if(!consoleMayBeGone || t->ConsoleOutHandle==p->Console) {
 #ifdef GU_SINGLE_RTX_CONSOLE
-  if(!t->ConIn || (UINTN)t->ConIn->Reset!=p->KeyReset || (UINTN)t->ConIn->ReadKeyStroke!=p->KeyRead || t->ConIn->WaitForKey!=p->KeyWait)return EFI_NOT_READY;
+    if(!t->ConIn || (UINTN)t->ConIn->Reset!=p->KeyReset || (UINTN)t->ConIn->ReadKeyStroke!=p->KeyRead || t->ConIn->WaitForKey!=p->KeyWait)return EFI_NOT_READY;
 #endif
-  if(t->ConsoleOutHandle!=p->Console || t->ConsoleInHandle!=p->Input || t->StandardErrorHandle!=p->Error ||
-     t->ConOut!=p->ConsoleText || t->StdErr!=p->ErrorText || t->ConIn!=p->Keys || !t->ConIn || !t->ConIn->ReadKeyStroke || !t->ConIn->WaitForKey)return EFI_NOT_READY;
-  VOID *out=NULL,*in=NULL,*err=NULL;
-  EFI_STATUS s=Interface(t->BootServices,p->Console,&TextGuid,&out);
-  if(s==EFI_SUCCESS)s=Interface(t->BootServices,p->Error,&TextGuid,&err);
-  if(s==EFI_SUCCESS)s=Interface(t->BootServices,p->Input,&InputGuid,&in);
-  if(s!=EFI_SUCCESS || out!=p->ConsoleText || err!=p->ErrorText || in!=p->Keys)return EFI_NOT_READY;
+    if(t->ConsoleOutHandle!=p->Console || t->ConsoleInHandle!=p->Input || t->StandardErrorHandle!=p->Error ||
+       t->ConOut!=p->ConsoleText || t->StdErr!=p->ErrorText || t->ConIn!=p->Keys || !t->ConIn || !t->ConIn->ReadKeyStroke || !t->ConIn->WaitForKey)return EFI_NOT_READY;
+    VOID *out=NULL,*in=NULL,*err=NULL;
+    EFI_STATUS s=Interface(t->BootServices,p->Console,&TextGuid,&out);
+    if(s==EFI_SUCCESS)s=Interface(t->BootServices,p->Error,&TextGuid,&err);
+    if(s==EFI_SUCCESS)s=Interface(t->BootServices,p->Input,&InputGuid,&in);
+    if(s!=EFI_SUCCESS || out!=p->ConsoleText || err!=p->ErrorText || in!=p->Keys)return EFI_NOT_READY;
+  }
   return Displays(t,p,FALSE);
 }
 EFI_STATUS GuPrepareConsole(EFI_SYSTEM_TABLE *t,GU_PREPARE_LOG log,VOID *context) {
@@ -391,19 +432,29 @@ EFI_STATUS GuPrepareConsole(EFI_SYSTEM_TABLE *t,GU_PREPARE_LOG log,VOID *context
 #ifdef GU_SINGLE_RTX_CONSOLE
   p.KeyReset=(UINTN)t->ConIn->Reset;p.KeyRead=(UINTN)t->ConIn->ReadKeyStroke;p.KeyWait=t->ConIn->WaitForKey;
 #endif
+  /* Each stage is named in the log so a refusal is diagnosable from the
+   * capture instead of needing another boot. */
+  const char *stage="console-preflight-displays";
   EFI_STATUS s=Displays(t,&p,TRUE);
-  if(s==EFI_SUCCESS)s=Snapshot(bs,&original);
-  if(s==EFI_SUCCESS)s=Consumers(t,&p,&original);
-  if(s==EFI_SUCCESS)s=Alive(t,&p);
-  EFI_STATUS recorded=log(context,"console-prepare-preflight",s);
+  if(s==EFI_SUCCESS){stage="console-preflight-snapshot";s=Snapshot(bs,&original);}
+  if(s==EFI_SUCCESS){stage="console-preflight-consumers";s=Consumers(t,&p,&original);}
+  if(s==EFI_SUCCESS){stage="console-preflight-alive";s=Alive(t,&p,FALSE);}
+  EFI_STATUS recorded=log(context,stage,s);
   if(s!=EFI_SUCCESS || recorded!=EFI_SUCCESS)return s==EFI_SUCCESS?recorded:s;
+#ifdef GU_CONSOLE_VERIFY_ONLY
+  /* Verification build: the display route, both console consumers and the
+   * runtime EDID owner matched their pinned fingerprints. Nothing is
+   * detached, so the console, input and Windows handoff stay untouched. */
+  PreparedPlan=p;PreparedGraph=&original;PreparedReady=TRUE;
+  return s;
+#endif
 #if !GU_CONSOLE_AGGREGATE
   for(UINTN stage=1;stage<=2;stage++) {
     /* Flush intent before the final live recheck so filesystem notifications
      * cannot make the graph snapshot older than our log operation. */
     s=log(context,stage==1?"detach-rtx-textout-intent":"detach-rtx-graphics-console-intent",EFI_SUCCESS);
     if(s!=EFI_SUCCESS)return s;
-    s=Alive(t,&p);
+    s=Alive(t,&p,FALSE);
     EFI_TPL old=bs->RaiseTPL(TPL_NOTIFY);
     if(s==EFI_SUCCESS)s=Snapshot(bs,&current);
     if(s==EFI_SUCCESS && !ExpectedGraph(&p,&original,&current,stage-1))s=EFI_NOT_READY;
@@ -417,11 +468,14 @@ EFI_STATUS GuPrepareConsole(EFI_SYSTEM_TABLE *t,GU_PREPARE_LOG log,VOID *context
     if(s!=EFI_SUCCESS || recorded!=EFI_SUCCESS)return s==EFI_SUCCESS?recorded:s;
     s=Snapshot(bs,&current);
     if(s==EFI_SUCCESS && !ExpectedGraph(&p,&original,&current,stage))s=EFI_NOT_READY;
-    if(s==EFI_SUCCESS)s=Alive(t,&p);
+    if(s==EFI_SUCCESS)s=Alive(t,&p,GU_CONSOLE_LEAVES_WITH_CONSUMERS);
     if(s==EFI_SUCCESS) {
       EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *rtxText=NULL;
       EFI_STATUS absent=Interface(bs,p.Rtx,&TextGuid,(VOID **)&rtxText);
-      if(stage==1 && (absent!=EFI_SUCCESS || !rtxText))s=EFI_NOT_READY;
+      /* Whether the released text-out driver also uninstalls its protocol is
+       * this board's own property: the graph expectation above is exact, so the
+       * release rehearsal does not assert it either way. */
+      if(stage==1 && !GU_CONSOLE_LEAVES_WITH_CONSUMERS && (absent!=EFI_SUCCESS || !rtxText))s=EFI_NOT_READY;
       if(stage==2 && !((absent==EFI_UNSUPPORTED || absent==EFI_NOT_FOUND) && !rtxText))s=EFI_NOT_READY;
     }
     recorded=log(context,stage==1?"detach-textout-verified":"detach-graphics-console-verified",s);
@@ -441,7 +495,7 @@ EFI_STATUS GuPrepareConsole(EFI_SYSTEM_TABLE *t,GU_PREPARE_LOG log,VOID *context
 EFI_STATUS GuVerifyPreparedConsole(EFI_SYSTEM_TABLE *t) {
   if(!PreparedReady || !t || !t->BootServices || !PreparedGraph)return EFI_NOT_READY;
   PLAN *p=&PreparedPlan;static GRAPH final;
-  EFI_STATUS s=Alive(t,p);
+  EFI_STATUS s=Alive(t,p,GU_CONSOLE_LEAVES_WITH_CONSUMERS);
 #if GU_CONSOLE_AGGREGATE
   if(s==EFI_SUCCESS)s=Driver(t->BootServices,p->EdidAgent,&EdidFile,GU_EDID_IMAGE_SIZE,GU_EDID_STOP,1,EfiRuntimeServicesCode);
   if(s==EFI_SUCCESS)s=Driver(t->BootServices,p->ComboAgent,&ComboFile,GU_COMBO_SIZE,GU_COMBO_STOP,GU_COMBO_VERSION,EfiBootServicesCode);
@@ -450,14 +504,21 @@ EFI_STATUS GuVerifyPreparedConsole(EFI_SYSTEM_TABLE *t) {
 #else
   if(s==EFI_SUCCESS)s=Driver(t->BootServices,p->OutAgent,&OutFile,GU_CONSOLE_TEXT_SIZE,GU_CONSOLE_TEXT_STOP,GU_CONSOLE_TEXT_VERSION,EfiBootServicesCode);
   if(s==EFI_SUCCESS)s=Driver(t->BootServices,p->GfxAgent,&GfxFile,GU_CONSOLE_GFX_SIZE,GU_CONSOLE_GFX_STOP,GU_CONSOLE_GFX_VERSION,EfiBootServicesCode);
+#ifndef GU_CONSOLE_VERIFY_ONLY
   EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *text=NULL;
   if(s==EFI_SUCCESS) {
     EFI_STATUS absent=Interface(t->BootServices,p->Rtx,&TextGuid,(VOID **)&text);
     if(!((absent==EFI_UNSUPPORTED || absent==EFI_NOT_FOUND) && !text))s=EFI_NOT_READY;
   }
 #endif
+#endif
+#ifdef GU_CONSOLE_VERIFY_ONLY
+  const UINTN expected=0; /* A verification build removes no edge at all. */
+#else
+  const UINTN expected=GU_CONSOLE_AGGREGATE?0:2;
+#endif
   if(s==EFI_SUCCESS)s=Snapshot(t->BootServices,&final);
-  if(s==EFI_SUCCESS && !ExpectedGraph(p,PreparedGraph,&final,GU_CONSOLE_AGGREGATE?0:2))s=EFI_NOT_READY;
+  if(s==EFI_SUCCESS && !ExpectedGraph(p,PreparedGraph,&final,expected))s=EFI_NOT_READY;
   if(s!=EFI_SUCCESS)PreparedReady=FALSE;
   return s;
 }

@@ -34,17 +34,35 @@ def one(predicate):
     if len(values) != 1:
         raise ValueError('Expected exactly one role')
     return indices[values[0]]
-roles = {
-    'RtxPci': one(lambda b: 'pci config-dwords=220410de' in b),
-    'AmdPci': one(lambda b: 'pci config-dwords=164e1002' in b),
-    'Rtx': one(lambda b: 'gop framebuffer=0x000000fcc0000000' in b),
-    'Amd': 0 if single else one(lambda b: 'gop framebuffer=0x000000fce0000000' in b),
-}
+if single:
+    # Single-GPU machines are identified from the capture, not from this host's
+    # ids: the card is the only physical GOP and its parent is the RTX PCI
+    # handle. There is no second display adapter to name.
+    physical = [h for h, b in blocks.items()
+                if (m := re.search(r'^gop framebuffer=0x([0-9a-f]+) bytes=0x([0-9a-f]+)', b, re.M))
+                and int(m[1], 16) and int(m[2], 16)]
+    if len(physical) != 1:
+        raise ValueError('Expected exactly one physical GOP')
+    parents = [e[0] for e in edges
+               if str(e[3]) == '09576e91-6d3f-11d2-8e39-00a0c969723b' and e[4] == 8
+               and e[2] == indices[physical[0]]]
+    if len(parents) != 1:
+        raise ValueError('Expected exactly one RTX parent')
+    roles = {'Rtx': indices[physical[0]], 'RtxPci': parents[0], 'Amd': 0, 'AmdPci': 0}
+else:
+    roles = {
+        'RtxPci': one(lambda b: 'pci config-dwords=220410de' in b),
+        'AmdPci': one(lambda b: 'pci config-dwords=164e1002' in b),
+        'Rtx': one(lambda b: 'gop framebuffer=0x000000fcc0000000' in b),
+        'Amd': one(lambda b: 'gop framebuffer=0x000000fce0000000' in b),
+    }
 if single:
     child_records = [e for e in edges if e[0] == roles['RtxPci'] and str(e[3]) == '09576e91-6d3f-11d2-8e39-00a0c969723b' and e[4] == 8 and e[2] != roles['Rtx']]
-    if len(child_records) != 1:
-        raise ValueError('Expected one additional RTX EDID-only child')
-    roles['EdidChild'] = child_records[0][2]
+    if len(child_records) > 1:
+        raise ValueError('Ambiguous RTX child set')
+    # Some boards create an extra EDID-only child; this one does not, and no
+    # host test names it, so the fixture records the card itself.
+    roles['EdidChild'] = child_records[0][2] if child_records else roles['Rtx']
 for role, protocol, controller in [
     ('OutAgent', '387477c2-69c7-11d2-8e39-00a0c969723b', roles['Rtx']),
     ('GfxAgent', '9042a9de-23dc-4a38-96fb-7aded080516a', roles['Rtx']),
@@ -69,12 +87,15 @@ for h, a, c, g, attrs, count in edges:
     guid = f'{{0x{g.time_low:x},0x{g.time_mid:x},0x{g.time_hi_version:x},{{' + ','.join(f'0x{x:x}' for x in data[8:]) + '}}'
     lines.append(f'{{(EFI_HANDLE){h},(EFI_HANDLE){a},(EFI_HANDLE){c},{guid},{attrs},{count}}},')
 lines.append('};')
-for role in ['Rtx', 'Amd']:
+for role in (['Rtx'] if single else ['Rtx', 'Amd']):
     block = blocks[next(h for h, i in indices.items() if i == roles[role + 'Pci'])]
     cfg = re.search(r'pci config-dwords=([^\n]+)', block)[1].split()
     if len(cfg) != 16:
         raise ValueError('Incomplete PCI snapshot')
     lines.append('static const UINT32 Fixture' + role + 'Config[16]={' + ','.join('0x' + x for x in cfg) + '};')
+if single:
+    # No second display adapter: the replay table only needs the slot to exist.
+    lines.append('static const UINT32 FixtureAmdConfig[16]={0};')
 target = Path(__file__).parent / ('build/r2/replay-fixture.h' if single else 'build/console/replay-fixture.h')
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_text('\n'.join(lines) + '\n')

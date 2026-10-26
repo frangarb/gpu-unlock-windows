@@ -14,6 +14,11 @@
 #if defined(GU_HOST_WRITE_TEST) && __STDC_HOSTED__ != 1
 #error GU_HOST_WRITE_TEST is forbidden in firmware builds
 #endif
+/* Discovery has no reviewed card/board identity, so it can never reach a
+   transaction: only the read-only diagnostic image may select it. */
+#if defined(GU_DISCOVERY) && !defined(GU_DIAGNOSTIC_ONLY)
+#error The discovery profile is diagnostic-only and cannot build a write path
+#endif
 #if defined(GU_STOCK_PROFILE_SS0) || defined(GU_STOCK_PROFILE_NAME)
 #error Stock profile value and name must be derived from the explicit selector
 #endif

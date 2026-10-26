@@ -1,14 +1,19 @@
 # GPL-2.0-only. New manual observation entry only; preserve current boot priority.
-param([switch]$Register,[switch]$ConsoleR2,[switch]$HeadlessUnlock)
+param([switch]$Register,[switch]$ConsoleR2,[switch]$HeadlessUnlock,[switch]$Preflight,[switch]$ConsoleVerify,[switch]$ReleaseFull,[switch]$WriteFull)
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $repo 'internal-boot/install/automatic-policy.ps1')
 $stateFile=Join-Path $PSScriptRoot 'registration.local.json'
 if($ConsoleR2){$stateFile=Join-Path $PSScriptRoot 'r2-registration.local.json'}
-if($HeadlessUnlock){if($ConsoleR2){throw 'Choose one research mode'};$stateFile=Join-Path $PSScriptRoot 'headless-registration.local.json'}
+if($HeadlessUnlock){$stateFile=Join-Path $PSScriptRoot 'headless-registration.local.json'}
+if($Preflight){$stateFile=Join-Path $PSScriptRoot 'preflight-registration.local.json'}
+if($ConsoleVerify){$stateFile=Join-Path $PSScriptRoot 'console-verify-registration.local.json'}
+if($ReleaseFull){$stateFile=Join-Path $PSScriptRoot 'release-full-registration.local.json'}
+if($WriteFull){$stateFile=Join-Path $PSScriptRoot 'write-full-registration.local.json'}
+if(@($ConsoleR2,$HeadlessUnlock,$Preflight,$ConsoleVerify,$ReleaseFull,$WriteFull | Where-Object {$_}).Count -gt 1){throw 'Choose one research mode'}
 $config=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/local-config.json') -Raw | ConvertFrom-Json
 function Bcd([string[]]$Arguments){$lines=@(& bcdedit @Arguments);if($LASTEXITCODE -ne 0){throw ('BCDEdit failed: '+($Arguments -join ' '))};return ($lines -join "`r`n")}
-function Ids([string]$Text){return @([regex]::Matches($Text,'(?mi)^identifier\s+(\{[0-9a-f-]{36}\})') | ForEach-Object {$_.Groups[1].Value})}
+function Ids([string]$Text){return @([regex]::Matches($Text,'(?mi)^(?:identifier|identificador)\s+(\{[0-9a-f-]{36}\})') | ForEach-Object {$_.Groups[1].Value})}
 function Order([string]$Text){
  $m=[regex]::Match($Text,'(?ms)^displayorder\s+(.*?)(?=\r?\n\S|\z)');if(!$m.Success){throw 'No firmware order'}
  $v=@([regex]::Matches($m.Groups[1].Value,'\{(?:bootmgr|[0-9a-f-]{36})\}') | ForEach-Object {$_.Value})
@@ -31,7 +36,15 @@ if(Confirm-SecureBootUEFI){throw 'Unsigned observation EFI requires Secure Boot 
 $encryption=Get-BitLockerVolume -MountPoint C:
 if([int]$encryption.VolumeStatus -ne 0 -or [int]$encryption.ProtectionStatus -ne 0){throw 'Encryption state changed; observation installer does not change encryption settings'}
 $name='GPU Headless Observe - NO UNLOCK';$path='\EFI\WindowsGPUUnlock\OBSERVE.EFI'
-if($HeadlessUnlock){
+if($Preflight){
+ # Read-only preflight of the reviewed profile for this machine: the manifest
+ # must say it cannot arm, and it writes only its log on this ESP.
+ $m=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/unlock/build/internal/build-manifest.json') -Raw | ConvertFrom-Json
+ if($m.Mode -ne 'diagnostic-preflight-only' -or $m.CanArm -ne $false -or $m.HardwareProfile -ne 'ASROCK-B450M-HDV-R4.0-P10.60-RTX3060'){throw 'Unexpected preflight contract'}
+ $source=Join-Path $repo 'internal-boot/unlock/build/internal/RTX3090-PREFLIGHT-INTERNAL.EFI'
+ $hash=$m.EfiSha256
+ $name='GPU 3060 Preflight - NO WRITE';$path='\EFI\WindowsGPUUnlock\PREFLIGHT.EFI'
+}elseif($HeadlessUnlock){
  $m=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/boot/build/headless/manifest.json') -Raw | ConvertFrom-Json
  $hash='6839bbc9987fa26b794dc6e2ffe98791642ac6e21ef01c388da9fffef3a878a3'
  $childHash='4dce4c2d06e4950af39cd20bdb267f888df8e3563cbc7011be5aeffcfd3ca469'
@@ -45,23 +58,82 @@ if($HeadlessUnlock){
  if(Test-Path -LiteralPath $childTarget){if((Get-FileHash -LiteralPath $childTarget).Hash -ne $childHash){throw 'Different headless child exists; refusing overwrite'}}
  else{[IO.File]::Copy($child,$childTarget,$false)}
  $name='GPU Headless UNLOCK - EXPERIMENTAL';$path='\EFI\WindowsGPUUnlock\HEADLESS.EFI'
+}elseif($ConsoleVerify){
+ # Console-chain verification for this machine: it may never detach or write.
+ $m=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/boot/build/console-verify/manifest.json') -Raw | ConvertFrom-Json
+ if($m.Mode -ne 'single-rtx-console-verify-only' -or $m.CanDetach -ne $false -or $m.CanUnlock -ne $false -or $m.CanWriteGpu -ne $false -or $m.HardwareProfile -ne 'ASROCK-B450M-HDV-R4.0-P10.60-RTX3060'){throw 'Unexpected console verify contract'}
+ $source=Join-Path $repo 'internal-boot/boot/build/console-verify/CONSOLE-VERIFY.EFI'
+ $hash=$m.EfiSha256
+ $name='GPU 3060 Console Verify - NO WRITE';$path='\EFI\WindowsGPUUnlock\CONSOLE-VERIFY.EFI'
+}elseif($WriteFull){
+ # Write-capable pair for this machine: the release rehearsal above is green, so
+ # the wrapper may load the exact-card unlock child and run it once.
+ $m=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/boot/build/write3060/manifest.json') -Raw | ConvertFrom-Json
+ if($m.Mode -ne 'single-rtx-headless-exact-card-unlock' -or $m.CanUnlock -ne $true -or $m.CanWriteGpu -ne $true -or $m.HardwareProfile -ne 'ASROCK-B450M-HDV-R4.0-P10.60-RTX3060'){throw 'Unexpected write pair contract'}
+ $source=Join-Path $repo 'internal-boot/boot/build/write3060/WRITE3060.EFI'
+ $hash=$m.EfiSha256
+ $child=Join-Path $repo 'internal-boot/unlock/build/experimental/entryLatchedSs1Full/internal/automatic/headless-research/RTX3090-EXPERIMENTAL-entryLatchedSs1Full-INTERNAL-AUTO-HEADLESS-RESEARCH.EFI'
+ $childHash=$m.ChildSha256
+ if((Get-FileHash -LiteralPath $child).Hash.ToLowerInvariant() -ne $childHash -or (Get-Item -LiteralPath $child).Length -ne $m.ChildBytes -or $m.ChildName -ne 'UNLOCK-HEADLESS.EFI'){throw 'Write pair child identity mismatch'}
+ $name='GPU 3060 UNLOCK - HEADLESS';$path='\EFI\WindowsGPUUnlock\WRITE3060.EFI'
+}elseif($ReleaseFull){
+ # Full release rehearsal: both console consumers, then the runtime EDID/mouse
+ # driver and nvgop, PCI decode restore and a cold verification, then Windows.
+ # It must never be able to unlock or write GPU state.
+ $m=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/boot/build/release-full/manifest.json') -Raw | ConvertFrom-Json
+ if($m.Mode -ne 'single-rtx-full-release-rehearsal' -or $m.CanUnlock -ne $false -or $m.CanWriteGpu -ne $false -or $m.CanDetach -ne $true -or $m.CanDetachNvOwner -ne $true -or $m.CanDetachRuntimeEdid -ne $true -or $m.CanRemoveGop -ne $true -or $m.HardwareProfile -ne 'ASROCK-B450M-HDV-R4.0-P10.60-RTX3060'){throw 'Unexpected full release rehearsal contract'}
+ $source=Join-Path $repo 'internal-boot/boot/build/release-full/RELEASE-FULL.EFI'
+ $hash=$m.EfiSha256
+ $name='GPU 3060 Full Release - NO UNLOCK';$path='\EFI\WindowsGPUUnlock\RELEASE-FULL.EFI'
 }elseif($ConsoleR2){
  $m=Get-Content -LiteralPath (Join-Path $repo 'internal-boot/boot/build/r2/manifest.json') -Raw | ConvertFrom-Json
  if($m.Mode -ne 'single-rtx-console-consumers-only' -or $m.RequiresHumanKey -ne $false -or $m.CanUnlock -ne $false -or $m.CanDetach -ne $true -or $m.CanDetachNvOwner -ne $false -or $m.CanDetachRuntimeEdid -ne $false -or $m.CanRemoveGop -ne $false){throw 'Unexpected R2 capabilities'}
+ # Same machine gate as the verification entry: the release image must be this
+ # board's own build, and its hash comes from that build.
+ if($m.HardwareProfile -ne 'ASROCK-B450M-HDV-R4.0-P10.60-RTX3060'){throw 'Console release image is for another profile'}
  $source=Join-Path $repo 'internal-boot/boot/build/r2/R2-CONSOLE.EFI'
- $hash='dada135fbaf8fa19ac1e627668e63387ce5387bf63054d3e3adfa7ca76824c67'
- $name='GPU R2 Auto Test - NO UNLOCK';$path='\EFI\WindowsGPUUnlock\R2-AUTO.EFI'
+ $hash=$m.EfiSha256
+ $name='GPU 3060 Console Release - NO UNLOCK';$path='\EFI\WindowsGPUUnlock\CONSOLE-RELEASE.EFI'
 }else{
  $m=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build/manifest.json') -Raw | ConvertFrom-Json
  if($m.Mode -ne 'headless-research-observation-only' -or $m.CanUnlock -ne $false -or $m.CanDetach -ne $false){throw 'Unexpected observation capabilities'}
  $source=Join-Path $PSScriptRoot 'build/OBSERVE.EFI'
- $hash='4c0672952a2b2f4a1e97520be1fe3332cc1a519efd9dbf5d3326ff900790988e'
+ if($m.HardwareProfile -eq 'discovery'){
+  # A discovery image is machine-specific by construction and was never a
+  # reviewed constant, so its own build manifest supplies the hash. It still
+  # cannot arm anything: the capability checks above are unchanged.
+  $hash=$m.EfiSha256; $name='GPU Discovery Observe - NO UNLOCK'
+ }else{
+  $hash='4c0672952a2b2f4a1e97520be1fe3332cc1a519efd9dbf5d3326ff900790988e'
+ }
 }
 if($m.EfiSha256 -ne $hash -or (Get-FileHash -LiteralPath $source).Hash -ne $hash){throw 'This registration requires the reviewed local observation image; different profiles need separate review'}
 $target=Join-Path $root $path.TrimStart('\')
+# The image logs and dumps into \RTX3090-UNLOCK; FAT32 cannot create that file
+# without its directory, so both trees must exist. Directories only, no state.
+[void][IO.Directory]::CreateDirectory((Join-Path $root 'EFI\WindowsGPUUnlock'))
+[void][IO.Directory]::CreateDirectory((Join-Path $root 'RTX3090-UNLOCK'))
+if($Preflight){[void][IO.Directory]::CreateDirectory((Join-Path $root 'RTX3090-PREFLIGHT'))}
 if(Test-Path -LiteralPath $target){if((Get-FileHash -LiteralPath $target).Hash -ne $hash){throw 'Different observation EFI exists; never overwrite'}}
 else{[IO.File]::Copy($source,$target,$false)}
-function CheckTarget {CheckWindows;if((Target) -ne $root -or (Get-FileHash -LiteralPath $target).Hash -ne $hash){throw 'Observation target changed'};if($HeadlessUnlock -and (Get-FileHash -LiteralPath $childTarget).Hash -ne $childHash){throw 'Headless child target changed'}}
+if($WriteFull){
+ $childTarget=Join-Path $root 'EFI\WindowsGPUUnlock\UNLOCK-HEADLESS.EFI'
+ if(Test-Path -LiteralPath $childTarget){if((Get-FileHash -LiteralPath $childTarget).Hash.ToLowerInvariant() -ne $childHash){throw 'A different unlock child is already staged; never overwrite'}}
+ else{[IO.File]::Copy($child,$childTarget,$false)}
+ # The child reads the five firmware assets from \RTX3090-UNLOCK\ASSETS and
+ # stops at stage=assets before touching the card if any is missing or differs.
+ $assetDir=Join-Path $root 'RTX3090-UNLOCK\ASSETS'
+ [void][IO.Directory]::CreateDirectory($assetDir)
+ foreach($a in (Get-Content -LiteralPath (Join-Path $repo 'internal-boot/unlock/assets.json') -Raw | ConvertFrom-Json)){
+  $src=Join-Path $repo ('assets/out/'+$a.Name)
+  if(!(Test-Path -LiteralPath $src) -or (Get-Item -LiteralPath $src).Length -ne [int64]$a.Bytes -or (Get-FileHash -LiteralPath $src).Hash.ToLowerInvariant() -ne $a.Sha256){throw ('Firmware asset missing or changed: '+$a.Name)}
+  $dst=Join-Path $assetDir $a.Name
+  if(Test-Path -LiteralPath $dst){if((Get-FileHash -LiteralPath $dst).Hash.ToLowerInvariant() -ne $a.Sha256){throw ('A different asset is installed: '+$a.Name)}}
+  else{[IO.File]::Copy($src,$dst,$false)}
+  if((Get-Item -LiteralPath $dst).Length -ne [int64]$a.Bytes -or (Get-FileHash -LiteralPath $dst).Hash.ToLowerInvariant() -ne $a.Sha256){throw ('Staged asset readback mismatch: '+$a.Name)}
+ }
+}
+function CheckTarget {CheckWindows;if((Target) -ne $root -or (Get-FileHash -LiteralPath $target).Hash -ne $hash){throw 'Observation target changed'};if(($HeadlessUnlock -or $WriteFull) -and (Get-FileHash -LiteralPath $childTarget).Hash.ToLowerInvariant() -ne $childHash){throw 'Headless child target changed'}}
 CheckTarget
 if(!$Register){Write-Output 'Observation EFI staged only; no boot entry/order changes.';return}
 if(Test-Path -LiteralPath $stateFile){throw 'Registration state already exists; inspect it before registering again'}
@@ -75,7 +147,7 @@ $backup=Join-Path $env:ProgramData ('WindowsGPUUnlock\ResearchBackups\'+(Get-Dat
 [void][IO.Directory]::CreateDirectory($backup)
 [void](Bcd @('/export',(Join-Path $backup 'BCD-export')))
 [IO.File]::WriteAllText((Join-Path $backup 'firmware-before.txt'),$firmwareBefore)
-$state=[ordered]@{EntryId=$null;Name=$name;Path=$path;BackupRoot=$backup;BootOrderBefore=$order;EfiSha256=$hash;CanUnlock=[bool]$HeadlessUnlock;CanDetach=([bool]$ConsoleR2 -or [bool]$HeadlessUnlock);Status='registering';HardwareTested=$false}
+$state=[ordered]@{EntryId=$null;Name=$name;Path=$path;BackupRoot=$backup;BootOrderBefore=$order;EfiSha256=$hash;CanUnlock=([bool]$HeadlessUnlock -or [bool]$WriteFull);CanDetach=([bool]$ConsoleR2 -or [bool]$HeadlessUnlock -or [bool]$ReleaseFull -or [bool]$WriteFull);Status='registering';HardwareTested=$false}
 CheckTarget
 if((Bcd @('/enum','{fwbootmgr}')) -cne $fw -or (Bcd @('/enum','firmware')) -cne $firmwareBefore){throw 'Firmware changed before registration'}
 Invoke-AutomaticTransition -Steps @(

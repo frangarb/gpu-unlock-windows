@@ -16,7 +16,13 @@ VOID Hex(CAPTURE *c,UINT64 v,UINTN digits);
 VOID End(CAPTURE *c);
 VOID Problem(CAPTURE *c,const char *where,EFI_STATUS s);
 
-#define GU_TARGET_VENDEV GU_BOARD_ID
+/* Discovery accepts every NVIDIA display function: collecting the identity is
+ * its whole purpose. A reviewed profile stays exact. */
+#if defined(GU_DISCOVERY)
+#define GU_TARGET_MATCH(Id,Class) ((((Id)&0xffffU)==0x10deU) && (((Class)>>24)==0x03U))
+#else
+#define GU_TARGET_MATCH(Id,Class) ((Id)==GU_BOARD_ID && (((Class)>>24)==0x03U))
+#endif
 static EFI_GUID PciGuidL=EFI_PCI_IO_PROTOCOL_GUID;
 static EFI_GUID BindGuidL=EFI_DRIVER_BINDING_PROTOCOL_GUID;
 static EFI_GUID ImgGuidL=EFI_LOADED_IMAGE_PROTOCOL_GUID;
@@ -86,7 +92,8 @@ static VOID ProbeCaps(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io) {
 static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar) {
   static const UINT32 offs[]={
     0x000000,0x108154,0x108170,0x108180,0x108354,
-    0x118128,0x118234,0x110100,0x1183a4,0x1fa828,
+    0x118128,0x118234,0x110100,0x1183a4,0x1fa824,0x1fa828,
+    0x1fa7c8,0x1fa82c,0x1fa830,0x625f04,
     0x8219c0,0x822804,0x823804,0x82381c,0x823820,0x824140
   };
   Text(c,"probe-bar0 base=0x");Hex(c,bar,16);End(c);
@@ -164,11 +171,13 @@ EFI_STATUS GuProbeGpu(EFI_SYSTEM_TABLE *t,CAPTURE *c) {
   if(s!=EFI_SUCCESS||!hs){Problem(c,"pci-enum",s);return s;}
   Text(c,"probe-pci-handles=");Hex(c,n,8);End(c);
   for(UINTN i=0;i<n && c->Io==EFI_SUCCESS;i++) {
-    EFI_PCI_IO_PROTOCOL *io=NULL;UINT32 id=0;
+    EFI_PCI_IO_PROTOCOL *io=NULL;UINT32 id=0,cls=0;
     if(bs->HandleProtocol(hs[i],&PciGuidL,(VOID **)&io)!=EFI_SUCCESS||!io)continue;
     if(io->Pci.Read(io,EfiPciIoWidthUint32,0,1,&id)!=EFI_SUCCESS)continue;
-    if(id!=GU_TARGET_VENDEV)continue;
+    if(io->Pci.Read(io,EfiPciIoWidthUint32,0x08,1,&cls)!=EFI_SUCCESS)continue;
+    if(!GU_TARGET_MATCH(id,cls))continue;
     found++;
+    PH(c,"probe class=0x",cls);
     UINTN seg=0,bus=0,dev=0,fun=0;
     if(io->GetLocation(io,&seg,&bus,&dev,&fun)==EFI_SUCCESS) {
       Text(c,"probe-target seg=0x");Hex(c,seg,4);Text(c," bus=0x");Hex(c,bus,4);
@@ -181,7 +190,9 @@ EFI_STATUS GuProbeGpu(EFI_SYSTEM_TABLE *t,CAPTURE *c) {
     UINT32 sub=0;io->Pci.Read(io,EfiPciIoWidthUint32,0x2c,1,&sub);PH(c,"subsystem=0x",sub);
     ProbeCaps(c,io);
     UINT32 bar=cfg[0x10/4]&~0xfU;
-    if(bar)ProbeBar(c,io,bar);else Problem(c,"bar0",EFI_UNSUPPORTED);
+    /* A 32-bit memory BAR0 is the only shape the port implements. */
+    if(cfg[0x10/4]&0x6U)Problem(c,"bar0-type",EFI_UNSUPPORTED);
+    else if(bar)ProbeBar(c,io,bar);else Problem(c,"bar0",EFI_UNSUPPORTED);
   }
   if(hs)bs->FreePool(hs);
   Text(c,"probe targets=");Hex(c,found,4);End(c);

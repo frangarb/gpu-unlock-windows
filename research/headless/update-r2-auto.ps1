@@ -27,7 +27,7 @@ if($manifest.Mode -ne 'single-rtx-console-consumers-only' -or $manifest.Requires
 $fw=Bcd @('/enum','{fwbootmgr}');$all=Bcd @('/enum','firmware');$entry=Bcd @('/enum',$state.EntryId)
 if($fw -match '(?mi)^bootsequence\s+' -or $entry -notmatch ('(?mi)^path\s+'+[regex]::Escape($oldPath)+'\s*$') -or $entry -notmatch ('(?mi)^description\s+'+[regex]::Escape($oldName)+'\s*$') -or $entry -notmatch ('(?mi)^device\s+partition='+[regex]::Escape($config.UnlockDriveLetter)+':\s*$') -or $fw -notmatch [regex]::Escape($state.EntryId)){throw 'R2 entry changed or BootNext pending'}
 $others=@{}
-foreach($m in [regex]::Matches($all,'(?mi)^identifier\s+(\{(?:bootmgr|[0-9a-f-]{36})\})')){if($m.Groups[1].Value -ne $state.EntryId){$others[$m.Groups[1].Value]=Bcd @('/enum',$m.Groups[1].Value)}}
+foreach($m in [regex]::Matches($all,'(?mi)^(?:identifier|identificador)\s+(\{(?:bootmgr|[0-9a-f-]{36})\})')){if($m.Groups[1].Value -ne $state.EntryId){$others[$m.Groups[1].Value]=Bcd @('/enum',$m.Groups[1].Value)}}
 $backup=Join-Path $env:ProgramData ('WindowsGPUUnlock\ResearchBackups\R2AUTO-'+(Get-Date -Format 'yyyyMMdd-HHmmssfff'))
 [void][IO.Directory]::CreateDirectory($backup)
 [void](Bcd @('/export',(Join-Path $backup 'BCD-export')))

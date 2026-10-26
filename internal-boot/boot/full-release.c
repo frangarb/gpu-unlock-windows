@@ -17,6 +17,11 @@ static BOOLEAN OwnRecord(EFI_HANDLE Handle,const EFI_OPEN_PROTOCOL_INFORMATION_E
 
 static EFI_GUID EdidGuid=EFI_EDID_DISCOVERED_PROTOCOL_GUID;
 static const EFI_GUID MouseFile={0xc7a7030c,0xc3d8,0x45ee,{0xbe,0xd9,0x5d,0x9e,0x76,0x76,0x29,0x53}};
+/* A profile pins the firmware-volume file GUID instead of the file name when
+ * its BIOS loads nvgop from a volume; either identity is accepted below. */
+#if defined(GU_NVGOP_FILE_GUID)
+static const EFI_GUID NvgopFile=GU_NVGOP_FILE_GUID;
+#endif
 typedef struct {
   EFI_SYSTEM_TABLE *Table;
   EFI_HANDLE Image,EdidAgent,NvAgent;
@@ -122,8 +127,19 @@ static EFI_STATUS Profile(EFI_HANDLE agent,BOOLEAN mouse) {
        im->FilePath->Length[0]!=20 || im->FilePath->Length[1] || !GuGuidEqual((UINT8 *)im->FilePath+4,&MouseFile))return EFI_UNSUPPORTED;
   } else {
     const CHAR16 name[]=L"nvgop-ga1xx";
-    if(im->DeviceHandle!=PreparedPlan.RtxPci || n!=4+sizeof(name)+4 || im->FilePath->Type!=MEDIA_DEVICE_PATH || im->FilePath->SubType!=MEDIA_FILEPATH_DP ||
-       im->FilePath->Length[0]!=4+sizeof(name) || im->FilePath->Length[1] || !Bytes((UINT8 *)im->FilePath+4,name,sizeof(name)))return EFI_UNSUPPORTED;
+    /* nvgop arrives as a file name on the reviewed machines and as a
+     * firmware-volume file GUID on others; a profile pins whichever its BIOS
+     * uses, and the other form is refused. */
+    BOOLEAN volume = n==24 && im->FilePath->Type==MEDIA_DEVICE_PATH && im->FilePath->SubType==MEDIA_PIWG_FW_FILE_DP &&
+       im->FilePath->Length[0]==20 && !im->FilePath->Length[1];
+    BOOLEAN named = n==4+sizeof(name)+4 && im->FilePath->Type==MEDIA_DEVICE_PATH && im->FilePath->SubType==MEDIA_FILEPATH_DP &&
+       im->FilePath->Length[0]==4+sizeof(name) && !im->FilePath->Length[1] && Bytes((UINT8 *)im->FilePath+4,name,sizeof(name));
+#if defined(GU_NVGOP_FILE_GUID)
+    volume = volume && GuGuidEqual((UINT8 *)im->FilePath+4,&NvgopFile);
+#else
+    volume = FALSE;
+#endif
+    if(im->DeviceHandle!=PreparedPlan.RtxPci || !(named || volume))return EFI_UNSUPPORTED;
   }
   /* Both original PE relocation tables contain zero relocations in .text.
    * Therefore hash the loaded code range directly; never hash relocated data. */
@@ -221,7 +237,7 @@ static EFI_STATUS FullConsumers(const GRAPH *g) {
   }
   return Full.EdidAgent!=Full.NvAgent && Full.EdidAgent!=Full.Image?EFI_SUCCESS:EFI_ACCESS_DENIED;
 #else
-  UINTN edid=0,nv=0,nvChild=0,amdEdid=0;
+  UINTN edid=0,nv=0,nvChild=0;
   for(UINTN i=0;i<g->Count;i++) {
     const EDGE *e=&g->Edges[i];
     if(e->Handle==PreparedPlan.Rtx) {
@@ -236,6 +252,13 @@ static EFI_STATUS FullConsumers(const GRAPH *g) {
     }
   }
   if(edid!=1 || nv!=1 || nvChild!=1 || Full.EdidAgent==Full.NvAgent || Full.EdidAgent==Full.Image || Full.NvAgent==Full.Image)return EFI_ACCESS_DENIED;
+#if GU_CONSOLE_ON_TARGET && !GU_CONSOLE_AGGREGATE
+  /* This board has no second display: there is no AMD EDID owner to pin, and
+   * nvgop must be the only live consumer of the target PCI handle. */
+  for(UINTN i=0;i<g->Count;i++)if(g->Edges[i].Handle==PreparedPlan.RtxPci && g->Edges[i].Agent!=Full.NvAgent)return EFI_ACCESS_DENIED;
+  return EFI_SUCCESS;
+#else
+  UINTN amdEdid=0;
   for(UINTN i=0;i<g->Count;i++) {
     const EDGE *e=&g->Edges[i];
     if(e->Handle==PreparedPlan.RtxPci && e->Agent!=Full.NvAgent)return EFI_ACCESS_DENIED;
@@ -243,9 +266,10 @@ static EFI_STATUS FullConsumers(const GRAPH *g) {
       if(e->Agent!=Full.EdidAgent || e->Attributes!=EFI_OPEN_PROTOCOL_BY_DRIVER || e->Controller!=PreparedPlan.Amd || e->Count!=1)return EFI_ACCESS_DENIED;
       amdEdid++;
     }
-  }
-  return amdEdid==1?EFI_SUCCESS:EFI_ACCESS_DENIED;
+  }  return amdEdid==1?EFI_SUCCESS:EFI_ACCESS_DENIED;
 #endif
+#endif
+
 }
 #if defined(GU_HEADLESS_RESEARCH) && GU_CONSOLE_AGGREGATE
 /* 0 keep exact, 1 may disappear (tolerated orphan cascade), 2 must be gone. */
@@ -303,6 +327,19 @@ static BOOLEAN FullExpected(const GRAPH *g,UINTN stage) {
   return g->Count==wanted+own;
 #endif
 }
+#if GU_CONSOLE_ON_TARGET && !GU_CONSOLE_AGGREGATE
+/* This board carries no second display and no console of its own, so once
+ * nvgop is released the only correct state is zero GOP handles. It replaces
+ * the AMD-console assertion the other profiles make here. */
+static EFI_STATUS NothingLeft(VOID) {
+  EFI_BOOT_SERVICES *bs=Full.Table->BootServices;EFI_HANDLE *handles=NULL;UINTN count=0;
+  EFI_STATUS s=bs->LocateHandleBuffer(ByProtocol,&GopGuid,NULL,&count,&handles);
+  if(s==EFI_NOT_FOUND && !handles && !count)return EFI_SUCCESS;
+  if(handles && bs->FreePool(handles)!=EFI_SUCCESS)return EFI_DEVICE_ERROR;
+  return s==EFI_SUCCESS?EFI_UNSUPPORTED:s;
+}
+#define AmdOnly NothingLeft
+#else
 static EFI_STATUS AmdOnly(VOID) {
 #ifdef GU_HEADLESS_RESEARCH
   EFI_SYSTEM_TABLE *t=Full.Table;PLAN *p=&PreparedPlan;EFI_BOOT_SERVICES *bs=t->BootServices;
@@ -369,6 +406,7 @@ static EFI_STATUS AmdOnly(VOID) {
   return s==EFI_SUCCESS && amd!=1?EFI_UNSUPPORTED:s;
 #endif
 }
+#endif /* GU_CONSOLE_ON_TARGET */
 static EFI_STATUS CapturePermit(VOID) {
   GU_CAPS caps;EFI_STATUS s=ReadConfigFull(Full.Config);
   if(s==EFI_SUCCESS && (!GuCheckConfig(Full.Config,0,1,0,0,&caps) || Full.Config[4]!=(UINT32)GU_BAR0_BASE || Full.Config[2]!=0x030000a1))s=EFI_UNSUPPORTED;
@@ -463,7 +501,7 @@ EFI_STATUS GuReleaseGop(EFI_SYSTEM_TABLE *t,EFI_HANDLE image,GU_PREPARE_LOG log,
     for(UINTN child=0;child<repeats;child++) {
 #endif
     s=Note(stage==3?"detach-rtx-edid-intent-shared-pointer-pauses":"detach-nvidia-gop-intent",EFI_SUCCESS);
-    if(s==EFI_SUCCESS)s=Alive(t,&PreparedPlan);
+    if(s==EFI_SUCCESS)s=Alive(t,&PreparedPlan,GU_CONSOLE_LEAVES_WITH_CONSUMERS);
     UINT32 cfg[64],cold[9];
     if(s==EFI_SUCCESS)s=ReadConfigFull(cfg);
     if(s==EFI_SUCCESS && !Bytes(cfg,Full.Config,sizeof(cfg)))s=EFI_NOT_READY;
@@ -479,7 +517,7 @@ EFI_STATUS GuReleaseGop(EFI_SYSTEM_TABLE *t,EFI_HANDLE image,GU_PREPARE_LOG log,
       s=Interface(bs,Full.Children[c],&PathGuid,(VOID **)&path);
       if(s==EFI_SUCCESS && !PathMatches(path,Full.ChildPaths[c]))s=EFI_NOT_READY;
     }
-    if(s==EFI_SUCCESS)s=Alive(t,&PreparedPlan);
+    if(s==EFI_SUCCESS)s=Alive(t,&PreparedPlan,GU_CONSOLE_LEAVES_WITH_CONSUMERS);
 #endif
     bs->RestoreTPL(old);
     if(s!=EFI_SUCCESS)return Note("full-release-recheck-failed",s);
@@ -490,7 +528,7 @@ EFI_STATUS GuReleaseGop(EFI_SYSTEM_TABLE *t,EFI_HANDLE image,GU_PREPARE_LOG log,
     s=bs->DisconnectController(stage==3?PreparedPlan.Rtx:PreparedPlan.RtxPci,stage==3?Full.EdidAgent:Full.NvAgent,NULL);
 #endif
     s=Note(stage==3?"detach-edid-return":"detach-nvidia-return",s);if(s!=EFI_SUCCESS)return s;
-    if(stage==3)s=Alive(t,&PreparedPlan);
+    if(stage==3)s=Alive(t,&PreparedPlan,GU_CONSOLE_LEAVES_WITH_CONSUMERS);
     else {Full.Released=TRUE;s=AmdOnly();}
     if(s==EFI_SUCCESS)s=Snapshot(bs,&g);
     if(s==EFI_SUCCESS && !FullExpected(&g,stage))s=EFI_NOT_READY;

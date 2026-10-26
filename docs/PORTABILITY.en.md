@@ -22,7 +22,7 @@ The executable sources are [`port.h`](../unlock/port.h), [`port.c`](../unlock/po
 ## Stages
 
 1. **Inventory and international documentation — implemented here.** English/Korean entry points, public Windows inventory, a manual compatibility issue form and explicit evidence limits. The inventory never authorizes unlock.
-2. **Generic pre-boot diagnostic discovery — planned.** Add a separate non-arming diagnostic path. Report candidates, GOP ancestry and resource descriptions without releasing a driver, changing PCI/MMIO, enabling bus mastering, allocating DMA or resetting a device. Existing default preflight is still machine-specific and does not satisfy this stage.
+2. **Generic pre-boot diagnostic discovery — implemented here as a read-only capture ([DISCOVERY.en.md](DISCOVERY.en.md)).** A separate non-arming diagnostic path. Report candidates, GOP ancestry and resource descriptions without releasing a driver, changing PCI/MMIO, enabling bus mastering, allocating DMA or resetting a device. Existing default preflight is still machine-specific and does not satisfy this stage.
 3. **Reviewed platform and GPU profiles — planned.** Separate resource discovery from GPU identity/layout/firmware policy. Unknown or ambiguous profiles remain non-arming. Latch device/resource identity for the transaction and recheck it after ownership changes. A user-edited configuration file must not grant write eligibility.
 4. **One new hardware configuration at a time — hardware evidence required.** Prefer host/display portability for the existing GPU family before adding different GPU models. Preserve the old verified case and review positive/negative host tests before any separately authorized hardware experiment.
 5. **Broader distribution — evidence required.** Publish a compatibility matrix keyed by EFI/source hashes, GPU/subsystem/PROM/firmware profile, motherboard/BIOS, display route and Windows driver/build. Record reports, mock-tested profiles and hardware-verified profiles as distinct statuses.
@@ -38,3 +38,24 @@ The executable sources are [`port.h`](../unlock/port.h), [`port.c`](../unlock/po
 - A mock pass is software evidence. Hardware support needs exact build/profile provenance, complete cleanup, Windows driver recovery and controlled before/after measurements. Stability and real-application performance require their own evidence.
 
 No hardware support is added by a model-name match, an inventory submission or a successful build. Firmware redistribution rules and existing licenses still apply.
+
+## Worked example: a third profile, end to end
+
+The GA106 / ASRock B450M profile (RTX 3060, console on the target, no second
+display) went through every stage on hardware in one day, and its logs are kept:
+capture, derived profile, read-only console verification, console-consumer
+release, full release with PCI decode restore, then a write build that reported
+`result=0` and measured 45–48 TFLOPS FP16→FP32.
+[Evidence](../evidence/discovery-rtx3060/README.md) ·
+[porting walkthrough (es)](PORTING.es.md).
+
+That profile needed two things the earlier ones did not, and any future
+console-on-target board will need them too: a release contract that tolerates
+losing the last display (`NothingLeft` instead of an AMD-console assertion) and a
+`GU_CONSOLE_EDID_ON_TARGET` owner. Neither is a hardware limit; both are
+compile-time profile facts.
+
+A single binary cannot carry this safely: the console chain, the driver
+fingerprints and the display path are BIOS-specific, and the design deliberately
+refuses runtime-supplied identities. Ports are produced by the five steps above,
+not by a switch.

@@ -20,7 +20,7 @@ function SetHiber($Plan){
 }
 function SaveState($State){$State | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $stateFile -Encoding utf8}
 function ExistsBcd([string]$Id){$null=& bcdedit /enum $Id;return $LASTEXITCODE -eq 0}
-function Ids([string]$Text){return @([regex]::Matches($Text,'(?mi)^identifier\s+(\{[0-9a-f-]{36}\})') | ForEach-Object {$_.Groups[1].Value})}
+function Ids([string]$Text){return @([regex]::Matches($Text,'(?mi)^(?:identifier|identificador)\s+(\{[0-9a-f-]{36}\})') | ForEach-Object {$_.Groups[1].Value})}
 function CheckEntry([string]$Text,[string]$Name,[string]$Path){
  if($Text -notmatch ('(?m)^description\s+'+[regex]::Escape($Name)+'\s*$') -or $Text -notmatch ('(?mi)^path\s+'+[regex]::Escape($Path)+'\s*$') -or $Text -notmatch ('(?mi)^device\s+partition='+[regex]::Escape($config.UnlockDriveLetter)+':\s*$')){throw 'Registered entry does not match expected device, path and name'}
 }

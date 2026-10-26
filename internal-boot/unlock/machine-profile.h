@@ -3,31 +3,98 @@
  * Reviewed single-machine profiles. Every write-enabled build compiles for
  * exactly one profile: all hardware identities, display topology and driver
  * fingerprints below are immutable, build-time selected and never read from
- * a user-editable file. Select with -DGU_PROFILE_B650M_3090FE or
- * -DGU_PROFILE_B660M_3070TI; the default is the originally verified machine.
- * Adding a profile here is never sufficient for support: each entry needs
- * its own hardware evidence (see docs/PORTABILITY.en.md stage 4).
+ * a user-editable file. Select with -DGU_PROFILE_B650M_3090FE,
+ * -DGU_PROFILE_B660M_3070TI, -DGU_PROFILE_ASROCK_B450M_RTX3060 or
+ * -DGU_PROFILE_DISCOVERY; the default is the originally verified machine.
+ * Adding a profile here is never sufficient for support: each entry needs its
+ * own hardware evidence (see docs/PORTABILITY.en.md stage 4). The ASRock GA106
+ * profile is read-only: its console chain has no reviewed detach path, so it
+ * refuses to compile a write-enabled build.
+ *
+ * Optional: a profile whose BIOS loads nvgop from a firmware volume instead of
+ * a file name pins GU_NVGOP_FILE_GUID {0x...,0x...,0x...,{...}} and the release
+ * gate accepts that file GUID in place of L"nvgop-ga1xx". No profile needs it
+ * today: every reviewed machine loads nvgop by name.
  */
 #pragma once
 
-#if defined(GU_PROFILE_B650M_3090FE) && defined(GU_PROFILE_B660M_3070TI)
+#if (defined(GU_PROFILE_B650M_3090FE) + defined(GU_PROFILE_B660M_3070TI) + \
+     defined(GU_PROFILE_DISCOVERY) + defined(GU_PROFILE_ASROCK_B450M_RTX3060)) > 1
 #error Select exactly one machine profile
 #endif
-#if !defined(GU_PROFILE_B650M_3090FE) && !defined(GU_PROFILE_B660M_3070TI)
+#if !defined(GU_PROFILE_B650M_3090FE) && !defined(GU_PROFILE_B660M_3070TI) && \
+    !defined(GU_PROFILE_DISCOVERY) && !defined(GU_PROFILE_ASROCK_B450M_RTX3060)
 #define GU_PROFILE_B650M_3090FE 1
 #endif
 
 /* 1 = the AMI combo splitter owns the console on top of the target GPU
  * (aggregate GOP + text-out driver chain; verified on AMI boards without a
  * second display GPU). 0 = nvgop owns the console GOP on the target directly
- * (original verified B650M headless topology). */
-#if defined(GU_PROFILE_B660M_3070TI)
+ * (original verified B650M headless topology). Discovery tolerates both, as
+ * it exists to record which one the machine actually has. */
+#if defined(GU_PROFILE_B660M_3070TI) || defined(GU_PROFILE_DISCOVERY)
 #define GU_CONSOLE_AGGREGATE 1
 #else
 #define GU_CONSOLE_AGGREGATE 0
 #endif
 
-#if defined(GU_PROFILE_B660M_3070TI)
+#if defined(GU_PROFILE_DISCOVERY)
+
+/* Read-only capture of an unprofiled machine (docs/DISCOVERY.en.md). It
+ * deliberately defines no card, board or display identity, so no transaction
+ * check can match it; only the diagnostic build accepts this profile. */
+#define GU_PROFILE_NAME "DISCOVERY-READ-ONLY"
+#define GU_DISCOVERY 1
+
+#elif defined(GU_PROFILE_ASROCK_B450M_RTX3060)
+
+/* ASRock B450M-HDV R4.0 BIOS P10.60, Ryzen without a console iGPU,
+ * ASUS RTX 3060 12GB (GA106): one read-only discovery capture
+ * (evidence/discovery-rtx3060), no transaction has run on it. */
+#define GU_PROFILE_NAME "ASROCK-B450M-HDV-R4.0-P10.60-RTX3060"
+#define GU_BOARD_ID 0x250410deU
+#define GU_BOARD_SUBSYSTEM 0x88161043U
+#define GU_BAR0_BASE 0xfb000000ULL
+#define GU_BAR0_END 0xfbffffffULL
+#define GU_DEVICE_MEMORY_SIZE 0x3000U
+#define GU_CHIP_ID 0xb76000a1U
+#define GU_PROM_SHA256 "a61344ca9e10b06a0538067cae05bd3387b2109583fea5e63cec6191d43214ee"
+#define GU_ROOT_PORT_DEVICE 1U
+#define GU_ROOT_PORT_FUNCTION 1U
+/* 36-byte display endpoint path as captured: ACPI root, root port, the card,
+ * its ACPI ADR endpoint, END. The PCI-only prefix (24 bytes) is not enough:
+ * the boot display is found by comparing this whole path. */
+#define GU_RTX_PATH_BYTES \
+  2,1,12,0,208,65,3,10,0,0,0,0,1,1,6,0,1,1,1,1,6,0,0,0,2,3,8,0,112,3,1,128,127,255,4,0
+/* This board ships the reviewed nvgop-ga1xx image unchanged (derived from the
+ * capture, see tools/derive_display.py) and its own EDID/mouse build. */
+#define GU_NVGOP_VERSION 0x60010U
+#define GU_NVGOP_IMAGE_SIZE 0x26ae0U
+#define GU_NVGOP_STOP 0x678U
+#define GU_NVGOP_TEXT_BYTES 0x20d33U
+#define GU_NVGOP_TEXT_SHA256 "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"
+#define GU_EDID_IMAGE_SIZE 0x8000U
+#define GU_EDID_STOP 0x1478U
+#define GU_EDID_TEXT_BYTES 0x2050U
+#define GU_EDID_TEXT_SHA256 "f803c0023b2e3f5c7a1998a79bba03065b6953de3ecce3406d51b62980cf33fd"
+/* Console chain measured from evidence/discovery-rtx3060: this board loads the
+ * same AMI text-out (OutFile) and gfx (GfxFile) drivers as the other profiles,
+ * with its own builds, plus an EDID/mouse runtime driver that also owns the
+ * console's input protocols. No splitter: the only GOP is the target's. */
+#define GU_CONSOLE_TEXT_SIZE 0x5c60U
+#define GU_CONSOLE_TEXT_STOP 0xf30U
+#define GU_CONSOLE_TEXT_VERSION 0x10U
+#define GU_CONSOLE_GFX_SIZE 0x3a80U
+#define GU_CONSOLE_GFX_STOP 0xa38U
+#define GU_CONSOLE_GFX_VERSION 0x10U
+/* Third owner of the target: the EDID/mouse runtime driver. Releasing it is
+ * part of any write path. All three owners are rehearsed on hardware, in
+ * order: console verify (CV03), console release (R2C00), and the full release
+ * with PCI decode restore and cold verification (R2C01). */
+#define GU_CONSOLE_EDID_ON_TARGET 1
+#define GU_CONSOLE_ON_TARGET 1
+
+#elif defined(GU_PROFILE_B660M_3070TI)
 
 /* ASUSTeK TUF GAMING B660M-E D4 BIOS 4003, i7-12700F (no iGPU),
  * MSI RTX 3070 Ti (GA104): hardware-verified headless port. */

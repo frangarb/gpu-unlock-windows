@@ -1,5 +1,5 @@
 # GPL-2.0-only. Separate local R2 experiment; no installation or firmware writes.
-param([string]$Clang='clang',[string]$LldLink='lld-link',[string]$VcVars='C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Auxiliary/Build/vcvars64.bat',[string]$Capture='U:/RTX3090-UNLOCK/DIAG02.TXT')
+param([string]$Clang='clang',[string]$LldLink='lld-link',[string]$VcVars='C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Auxiliary/Build/vcvars64.bat',[string]$Capture='U:/RTX3090-UNLOCK/DIAG02.TXT',[ValidateSet('b650m-3090fe','asrock-b450m-rtx3060')][string]$HardwareProfile='b650m-3090fe')
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $boot=Join-Path $repo 'internal-boot/boot'
@@ -17,7 +17,14 @@ try {
  $lines=& cmd.exe /d /c "call `"$VcVars`" >nul && set"
  if($LASTEXITCODE -ne 0){throw 'MSVC environment failed'}
  foreach($line in $lines){if($line -match '^([^=]+)=(.*)$'){[Environment]::SetEnvironmentVariable($matches[1],$matches[2],'Process')}}
- $defines=@('-DGU_SINGLE_RTX_CONSOLE','-DGU_DIAGNOSTIC_ONLY','-DGU_CONSOLE_PREPARE')
+ # One reviewed profile per build: the console chain, the card and the board ids
+ # below are that machine's, never a runtime choice.
+ $profiles=@{
+  'b650m-3090fe'=[ordered]@{Define=@();Name='ASUS-TUF-B650M-PLUS-WIFI-3057-RTX3090-FE'}
+  'asrock-b450m-rtx3060'=[ordered]@{Define=@('-DGU_PROFILE_ASROCK_B450M_RTX3060','-DGU_TARGET_PCI_ID=0x250410deU');Name='ASROCK-B450M-HDV-R4.0-P10.60-RTX3060'}
+ }
+ $hw=$profiles[$HardwareProfile]
+ $defines=@('-DGU_SINGLE_RTX_CONSOLE','-DGU_DIAGNOSTIC_ONLY','-DGU_CONSOLE_PREPARE')+$hw.Define
  $includes=@('-I','../../deps/edk2/MdePkg/Include','-I','../../deps/edk2/MdePkg/Include/X64')
  & $Clang -std=c11 -O1 -Wall -Wextra -Werror -D_CRT_SECURE_NO_WARNINGS @defines @includes test_r2.c research-input.c console-flow.c -o build/r2/test-r2.exe
  if($LASTEXITCODE -ne 0){throw 'R2 host tests compile failed'}
@@ -34,5 +41,5 @@ try {
  if($LASTEXITCODE -ne 0){throw 'R2 EFI link failed'}
  & python ../unlock/verify_pe.py build/r2/R2-CONSOLE.EFI build/r2/R2-CONSOLE.map --output build/r2/pe-verification.json
  if($LASTEXITCODE -ne 0){throw 'R2 PE verification failed'}
- [ordered]@{Mode='single-rtx-console-consumers-only';RequiresHumanKey=$false;CanUnlock=$false;CanDetach=$true;CanDetachNvOwner=$false;CanDetachRuntimeEdid=$false;CanRemoveGop=$false;HardwareTested=$false;EfiSha256=(Get-FileHash -LiteralPath build/r2/R2-CONSOLE.EFI).Hash;BuiltUtc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content -LiteralPath build/r2/manifest.json -Encoding utf8
+ [ordered]@{Mode='single-rtx-console-consumers-only';HardwareProfile=$hw.Name;RequiresHumanKey=$false;CanUnlock=$false;CanDetach=$true;CanDetachNvOwner=$false;CanDetachRuntimeEdid=$false;CanRemoveGop=$false;HardwareTested=$false;EfiBytes=(Get-Item -LiteralPath build/r2/R2-CONSOLE.EFI).Length;EfiSha256=(Get-FileHash -LiteralPath build/r2/R2-CONSOLE.EFI).Hash;BuiltUtc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content -LiteralPath build/r2/manifest.json -Encoding utf8
 } finally {Pop-Location}

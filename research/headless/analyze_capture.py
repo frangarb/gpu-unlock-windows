@@ -69,6 +69,10 @@ def analyze(raw, capture_index=None):
         role = 'other'
         if words[0] == 0x220410de and words[11] == 0x145410de:
             role = 'rtx3090_exact_id'
+        elif (words[0] & 0xFFFF) == 0x10de and (words[2] >> 24) == 0x03:
+            # Any NVIDIA display controller: the reviewed profile pins the exact
+            # ids, this gate only has to see that the boot display is the card.
+            role = 'nvidia_display'
         elif words[0] == 0x164e1002 and words[11] == 0x88771043:
             role = 'amd_igpu_exact_id'
         parents.append((h, path[:-4], role))
@@ -97,8 +101,9 @@ def analyze(raw, capture_index=None):
         physical.append(matches[0][2])
     console_text = 'protocol guid=' + TEXT in handles[console[1]]
     input_protocol = 'protocol guid=' + INPUT in handles[console[3]]
-    candidate = (physical == ['rtx3090_exact_id'] and
-                 sum(p[2] == 'rtx3090_exact_id' for p in parents) == 1 and
+    card = ('rtx3090_exact_id', 'nvidia_display')
+    candidate = (len(physical) == 1 and physical[0] in card and
+                 sum(p[2] in card for p in parents) == 1 and
                  console_text and input_protocol)
     return {
         'schema_version': 1,

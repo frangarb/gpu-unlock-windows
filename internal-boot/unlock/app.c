@@ -9,6 +9,7 @@
 #include <Protocol/GraphicsOutput.h>
 #include <IndustryStandard/Acpi.h>
 #include <Guid/GlobalVariable.h>
+
 #ifdef GU_HEADLESS_RESEARCH
 #include "headless-policy.h"
 static BOOLEAN GuAppError(EFI_STATUS s){return s!=EFI_SUCCESS;}
@@ -71,6 +72,9 @@ static BOOLEAN ConsoleGopCheck(EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop,UINTN Index,
   }
   return valid;
 }
+#if !defined(GU_CONSOLE_ON_TARGET)
+/* iGPU console rule of the original machine; the console-on-target profile
+   checks the target's own path instead. */
 static BOOLEAN AmdGopParent(EFI_DEVICE_PATH_PROTOCOL *Path) {
   EFI_DEVICE_PATH_PROTOCOL *remaining=Path;EFI_HANDLE parent=NULL;
   EFI_PCI_IO_PROTOCOL *pci=NULL;UINT32 id=0,subsystem=0;UINTN s,b,d,f;
@@ -87,12 +91,41 @@ static BOOLEAN AmdGopParent(EFI_DEVICE_PATH_PROTOCOL *Path) {
   return !EFI_ERROR(status) && id==GU_AMD_ID && subsystem==GU_AMD_SUBSYSTEM;
 }
 #endif
+#endif
+#if defined(GU_CONSOLE_ON_TARGET) && !defined(GU_HEADLESS_RESEARCH)
+/* Only the manual display check walks device paths; a headless research build
+ * delegates that to GuHeadlessCheck(). */
+/* Total bytes of a well-formed device path, or 0. */
+static UINTN PathBytes(EFI_DEVICE_PATH_PROTOCOL *Path) {
+  UINTN total=0;
+  for(UINTN nodes=0;Path && nodes<64 && total+4<=4096;nodes++) {
+    UINTN n=Path->Length[0]|((UINTN)Path->Length[1]<<8);
+    if(n<4 || n>4096-total)return 0;
+    total+=n;
+    if(Path->Type==END_DEVICE_PATH_TYPE)return total;
+    Path=(EFI_DEVICE_PATH_PROTOCOL *)((UINT8 *)Path+n);
+  }
+  return 0;
+}
+/* A display path may carry trailing ACPI ADR nodes after the endpoint; the
+   identity is the ACPI root, the root port and the endpoint. */
+static BOOLEAN SameDisplayPrefix(EFI_DEVICE_PATH_PROTOCOL *Left,EFI_DEVICE_PATH_PROTOCOL *Right) {
+  UINTN prefix=sizeof(ACPI_HID_DEVICE_PATH)+2*sizeof(PCI_DEVICE_PATH);
+  return PathBytes(Left)>=prefix && PathBytes(Right)>=prefix && !memcmp(Left,Right,prefix);
+}
+#endif
 static BOOLEAN DisplayCheck(VOID) {
 #ifdef GU_HEADLESS_RESEARCH
   return GuHeadlessCheck() && GuLogReady();
 #else
   EFI_HANDLE *handles=NULL;UINTN count=0,intel=0;BOOLEAN valid=TRUE;
   EFI_GRAPHICS_OUTPUT_MODE_INFORMATION physical={0},forwarded={0};BOOLEAN forwarding=FALSE;
+#if defined(GU_CONSOLE_ON_TARGET)
+  /* This topology has no second adapter and no splitter: the boot GOP must be
+     the target card's own, so its device path must equal the target's. */
+  EFI_DEVICE_PATH_PROTOCOL *ours=NULL;BOOLEAN same=FALSE;
+  if(!EFI_ERROR(Gu.bs->HandleProtocol(Gu.handle,&PathGuid,(VOID **)&ours)) && ours)same=PathBytes(ours)!=0;
+#endif
   EFI_STATUS status=Gu.bs->LocateHandleBuffer(ByProtocol,&GopGuid,NULL,&count,&handles);
   GuLog("GOP enumeration: status=%#llx handles=%zu\n",(unsigned long long)status,(size_t)count);
   if(EFI_ERROR(status) || !handles || !count || count>16){if(handles)GuFree(handles);return FALSE;}
@@ -125,12 +158,19 @@ static BOOLEAN DisplayCheck(VOID) {
     }
     if(!mode->Info || mode->SizeOfInfo<sizeof(*mode->Info)){valid=FALSE;break;}
     GopInfoLog(i,mode->Info);
-     if(EFI_ERROR(status) || !path || route!=1 || !AmdGopParent(path) || !mode->FrameBufferBase ||
+    {
+#if defined(GU_CONSOLE_ON_TARGET)
+      BOOLEAN owned=same && !EFI_ERROR(status) && path && route==2 && SameDisplayPrefix(path,ours);
+#else
+      BOOLEAN owned=route==1 && AmdGopParent(path);
+#endif
+     if(EFI_ERROR(status) || !path || !owned || !mode->FrameBufferBase ||
        !mode->FrameBufferSize || mode->Info->PixelFormat>PixelBlueGreenRedReserved8BitPerColor ||
        !mode->Info->HorizontalResolution || !mode->Info->VerticalResolution ||
        mode->Info->PixelsPerScanLine<mode->Info->HorizontalResolution ||
        (UINT64)mode->Info->PixelsPerScanLine*mode->Info->VerticalResolution>mode->FrameBufferSize/4) {
       valid=FALSE;break;
+    }
     }
     physical=*mode->Info;intel++;
   }

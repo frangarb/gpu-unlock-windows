@@ -24,6 +24,9 @@
 #ifdef GU_SINGLE_RTX_CONSOLE
 #include "research-input.h"
 #endif
+#ifdef GU_CONSOLE_RELEASE_FULL
+#include "full-release.h"
+#endif
 #ifndef GU_DIAGNOSTIC_ONLY
 #error Console prepare must not load the unlock application
 #endif
@@ -67,8 +70,17 @@ static VOID ScreenStatus(const char *Event,EFI_STATUS Status) {
   text[n++]='\r';text[n++]='\n';text[n]=0;Say(text);
 }
 #endif
-static VOID Stop(VOID) {
-  Say(L"\r\nHANDOFF STOPPED. No reset or automatic retry. Power off and use Windows Boot Manager for recovery.\r\n");
+static VOID Stop(EFI_STATUS Status) {
+#ifdef GU_SINGLE_RTX_CONSOLE
+  ResearchOutputDisabled=FALSE; /* Stopping anyway: report even if the console was released. */
+#endif
+  /* The status is printed because the log is already closed by the time the
+   * last checks run: without it a late refusal leaves no trace at all. */
+  CHAR16 text[160];UINTN n=0;const CHAR16 *prefix=L"\r\nHANDOFF STOPPED status=0x";
+  while(*prefix)text[n++]=*prefix++;
+  for(int i=15;i>=0;i--)text[n++]=L"0123456789abcdef"[((UINT64)Status>>(i*4))&15];
+  text[n++]='\r';text[n++]='\n';text[n]=0;Say(text);
+  Say(L"No reset or automatic retry. Power off and use Windows Boot Manager for recovery.\r\n");
   if(Table && Table->BootServices) {
     if(Table->BootServices->SetWatchdogTimer(0,0,0,NULL)!=EFI_SUCCESS)
       Say(L"WARNING: firmware watchdog could not be disabled.\r\n");
@@ -126,7 +138,9 @@ static EFI_STATUS OpenLog(VOID) {
 #ifdef GU_FULL_UNLOCK
     CHAR16 name[]=L"\\RTX3090-UNLOCK\\FULL00.TXT";
 #elif defined(GU_CONSOLE_PREPARE)
-#ifdef GU_SINGLE_RTX_CONSOLE
+#ifdef GU_CONSOLE_VERIFY_ONLY
+    CHAR16 name[]=L"\\RTX3090-UNLOCK\\CV00.TXT";
+#elif defined(GU_SINGLE_RTX_CONSOLE)
     CHAR16 name[]=L"\\RTX3090-UNLOCK\\R2C00.TXT";
 #else
     CHAR16 name[]=L"\\RTX3090-UNLOCK\\PREP00.TXT";
@@ -327,7 +341,12 @@ static EFI_STATUS ReadyConsoleWindows(VOID *Context) {
   s=Root->Close(Root);Root=NULL;return s;
 }
 static EFI_STATUS VerifyConsole(VOID *Context) {
-  (void)Context;return GuVerifyPreparedConsole(Table);
+  (void)Context;
+#ifdef GU_CONSOLE_RELEASE_FULL
+  return GuVerifyReleased(Table,TRUE);
+#else
+  return GuVerifyPreparedConsole(Table);
+#endif
 }
 static EFI_STATUS StartConsoleWindows(VOID *Context) {
   (void)Context;return Table->BootServices->StartImage(WindowsImage,NULL,NULL);
@@ -336,7 +355,11 @@ static EFI_STATUS PrepareChoice(VOID *Context,BOOLEAN *Skip) {
   (void)Context;*Skip=FALSE;
   if(!Table->ConIn || !Table->ConIn->ReadKeyStroke)return EFI_UNSUPPORTED;
 #ifdef GU_SINGLE_RTX_CONSOLE
+#ifdef GU_CONSOLE_VERIFY_ONLY
+  Say(L"CONSOLE CHAIN VERIFY: no detach, no GPU writes.\r\nChecks the target display route, both console drivers and the runtime EDID owner, then starts Windows.\r\nEsc within 5 seconds skips the check and starts Windows.\r\n");
+#else
   Say(L"R2 AUTO CONSOLE TEST: NO UNLOCK, NVIDIA GOP RETAINED.\r\nNo key required: console detach, state verification, then Windows.\r\nEsc within 5 seconds skips all changes and starts Windows.\r\nOn failure there is no reset or retry: power off, then F8 Windows Boot Manager.\r\n");
+#endif
   return GuResearchChooseInput(Table,Skip);
 #else
   Say(L"RTX console detach TEST. No unlock. Keep AMD display connected.\r\nPress Esc within 5 seconds to skip the test and start Windows.\r\n");
@@ -354,9 +377,24 @@ static EFI_STATUS CaptureConsole(VOID *Context) {
 }
 static EFI_STATUS DetachConsole(VOID *Context) {
 #ifdef GU_SINGLE_RTX_CONSOLE
-  (void)Context;ResearchOutputDisabled=TRUE;
+  (void)Context;
+#ifndef GU_CONSOLE_VERIFY_ONLY
+  /* A verification build detaches nothing, so it keeps the screen: a refusal
+   * stays readable instead of leaving a frozen banner to power-cycle. */
+  ResearchOutputDisabled=TRUE;
+#endif
   EFI_STATUS s=GuPrepareConsole(Table,Record,NULL);
+#ifdef GU_CONSOLE_VERIFY_ONLY
   return s==EFI_SUCCESS?GuResearchConfirmInput(Table,Record,NULL):s;
+#elif defined(GU_CONSOLE_RELEASE_FULL)
+  /* The two console consumers are gone; now release the runtime EDID/mouse
+   * driver and nvgop, restore PCI decode, and verify the cold state. */
+  return s==EFI_SUCCESS?GuReleaseGop(Table,Self,Record,NULL):s;
+#else
+  /* The console and its input belong to the released consumer: a keyboard
+   * probe after a successful release could only strand the card. */
+  return s;
+#endif
 #else
   (void)Context;return GuPrepareConsole(Table,Record,NULL);
 #endif
@@ -364,11 +402,12 @@ static EFI_STATUS DetachConsole(VOID *Context) {
 #endif
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
   Table=St;Self=Image;
-  if(!St || !St->BootServices)Stop();
-  if(St->BootServices->SetWatchdogTimer(0,0,0,NULL)!=EFI_SUCCESS)Stop();
+  EFI_STATUS s;
+  if(!St || !St->BootServices){Stop(EFI_INVALID_PARAMETER);}
+  if(St->BootServices->SetWatchdogTimer(0,0,0,NULL)!=EFI_SUCCESS){Stop(EFI_DEVICE_ERROR);}
   EFI_LOADED_IMAGE_PROTOCOL *loaded=NULL;
-  EFI_STATUS s=St->BootServices->HandleProtocol(Image,&LoadedGuid,(VOID **)&loaded);
-  if(s!=EFI_SUCCESS || !loaded)Stop();
+  s=St->BootServices->HandleProtocol(Image,&LoadedGuid,(VOID **)&loaded);
+  if(s!=EFI_SUCCESS || !loaded){Stop(s==EFI_SUCCESS?EFI_DEVICE_ERROR:s);}
   OwnDevice=loaded->DeviceHandle;
 #ifdef GU_FULL_UNLOCK
   GU_FULL_FLOW_OPS ops={NULL,Prepare,FullChoice,FullCapture,FullRelease,FullVerifyCold,Unlock,Windows,FullWindows,Record};
@@ -395,6 +434,6 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
 #ifdef GU_FULL_UNLOCK
   ScreenStatus("full-flow-returned",s);
 #endif
-  Stop();
+  Stop(s);
   return EFI_ABORTED; /* unreachable: do not fall through firmware BootOrder */
 }

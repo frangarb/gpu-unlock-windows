@@ -17,6 +17,35 @@ v0.3.1 fixes preflight rejection when firmware exposes more than two RTX display
 children. The rebuilt wrapper completed automatic unlock and Windows handoff on
 the same system; no new performance benchmark was run for this build.
 
+## Second verified machine: RTX 3060 (GA106), console on the target
+
+On October 25, 2026 a second, deliberately different machine completed the same
+chain on hardware: ASRock **B450M-HDV R4.0**, BIOS **P10.60**, Ryzen **without an
+iGPU**, ASUS **RTX 3060 12GB** (`10de:2504`, subsystem `1043:8816`). Here the
+console is **on the target card** — no second display and no AMI splitter — so
+three owners had to be released instead of two, and there is nothing left to
+display with afterwards.
+
+The unlock transaction reported `result=0` with `SS0=0x88888888`, `SS1=0x8`
+surviving the PCIe FLR, Windows came up on driver 621.01, and the tensor rate
+measured **45–48 TFLOPS FP16→FP32** and **23–25 TFLOPS TF32→FP32**, the full
+figures for this part instead of the GeForce rate.
+[Evidence, all four rehearsals and the exact logs](evidence/discovery-rtx3060/README.md).
+
+End-user tool for that machine (activate, verify, deactivate):
+
+```powershell
+.\GpuUnlock.ps1 -Activate     # stage the images and add the F8 entry
+.\GpuUnlock.ps1 -Verify       # read the last log and measure the tensor rate
+.\GpuUnlock.ps1 -Deactivate   # remove the entry, restore the boot order
+```
+
+[User guide (es)](docs/USER-GUIDE.es.md) · [Porting guide for other machines (es)](docs/PORTING.es.md)
+
+The unlock lives in firmware RAM only: a full power-off returns the card to
+factory state. Nothing in this tree writes the GPU BIOS, the vBIOS or the
+driver, and no firmware is redistributed.
+
 This is one machine and boot, not general RTX 3090 support. The Ryzen 7 7800X3D
 **has an iGPU**; the experiment used no active AMD GOP. CPUs without an iGPU,
 Intel hosts, other cards and other BIOS versions remain unverified.
@@ -132,7 +161,9 @@ Do not remove checks or substitute a PROM hash to force another machine through.
 No VBIOS flashing or Windows driver replacement is part of the procedure.
 Driver 617.14 was unchanged in the documented run. Host mock tests do not add hardware
 support. New systems require [compatibility reporting](docs/CONTRIBUTING.en.md) and
-[portability validation](docs/PORTABILITY.en.md).
+[portability validation](docs/PORTABILITY.en.md). An unprofiled card matches no
+profile and cannot arm anything; record it first with the read-only capture in
+[DISCOVERY.en.md](docs/DISCOVERY.en.md) ([español](docs/DISCOVERY.es.md)).
 
 ## License and attribution
 

@@ -28,6 +28,12 @@ static EFI_PCI_IO_PROTOCOL AmdPci,RtxPci;
 static EFI_DRIVER_BINDING_PROTOCOL OutBinding,GfxBinding;
 static EFI_LOADED_IMAGE_PROTOCOL OutImage,GfxImage;
 static UINT8 OutFilePath[24],GfxFilePath[24];
+#ifdef GU_CONSOLE_EDID_ON_TARGET
+/* Third console owner on boards whose console is the target's own child. */
+static EFI_DRIVER_BINDING_PROTOCOL EdidBinding;
+static EFI_LOADED_IMAGE_PROTOCOL EdidImage;
+static UINT8 EdidFilePath[24];
+#endif
 static UINT8 TestAmdPath[36],TestRtxPath[36];
 static EFI_GUID Dummy={0x12345678,0,0,{0}};
 #ifdef GU_FULL_REPLAY_TEST
@@ -122,9 +128,15 @@ static EFI_STATUS EFIAPI Handle(EFI_HANDLE h,EFI_GUID *g,VOID **out) {
   } else if(GuGuidEqual(g,&BindingGuid)) {
     if(h==FX_OutAgent)*out=&OutBinding;
     if(h==FX_GfxAgent)*out=&GfxBinding;
+#ifdef GU_CONSOLE_EDID_ON_TARGET
+    if(h==FX_EdidAgent)*out=&EdidBinding;
+#endif
   } else if(GuGuidEqual(g,&ImageGuid)) {
     if(h==FX_OutImage)*out=&OutImage;
     if(h==FX_GfxImage)*out=&GfxImage;
+#ifdef GU_CONSOLE_EDID_ON_TARGET
+    if(h==FX_EdidImage)*out=&EdidImage;
+#endif
   }
   return *out?EFI_SUCCESS:EFI_UNSUPPORTED;
 }
@@ -218,13 +230,25 @@ static EFI_STATUS Run(int scenario) {
   OutBinding.Version=GfxBinding.Version=0x10;
   OutBinding.DriverBindingHandle=FX_OutAgent;GfxBinding.DriverBindingHandle=FX_GfxAgent;
   OutBinding.ImageHandle=FX_OutImage;GfxBinding.ImageHandle=FX_GfxImage;
-  OutBinding.Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)0x101494;GfxBinding.Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)0x200f04;
+  /* Fingerprints come from the selected profile, so this replay covers whichever
+   * machine the build targets instead of only the first one. */
+  OutBinding.Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)(0x100000+GU_CONSOLE_TEXT_STOP);
+  GfxBinding.Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)(0x200000+GU_CONSOLE_GFX_STOP);
   OutImage=(EFI_LOADED_IMAGE_PROTOCOL){0};GfxImage=OutImage;
-  OutImage.ImageBase=(VOID *)0x100000;OutImage.ImageSize=0x7820;OutImage.ImageCodeType=EfiBootServicesCode;
-  GfxImage.ImageBase=(VOID *)0x200000;GfxImage.ImageSize=0x48a0;GfxImage.ImageCodeType=EfiBootServicesCode;
+  OutImage.ImageBase=(VOID *)0x100000;OutImage.ImageSize=GU_CONSOLE_TEXT_SIZE;OutImage.ImageCodeType=EfiBootServicesCode;
+  GfxImage.ImageBase=(VOID *)0x200000;GfxImage.ImageSize=GU_CONSOLE_GFX_SIZE;GfxImage.ImageCodeType=EfiBootServicesCode;
   memcpy(OutFilePath,(UINT8[]){4,6,20,0},4);memcpy(OutFilePath+4,&OutFile,16);memcpy(OutFilePath+20,(UINT8[]){127,255,4,0},4);
   memcpy(GfxFilePath,(UINT8[]){4,6,20,0},4);memcpy(GfxFilePath+4,&GfxFile,16);memcpy(GfxFilePath+20,(UINT8[]){127,255,4,0},4);
   OutImage.FilePath=(VOID *)OutFilePath;GfxImage.FilePath=(VOID *)GfxFilePath;
+#ifdef GU_CONSOLE_EDID_ON_TARGET
+  EdidBinding=(EFI_DRIVER_BINDING_PROTOCOL){0};
+  EdidBinding.Version=1;EdidBinding.DriverBindingHandle=FX_EdidAgent;EdidBinding.ImageHandle=FX_EdidImage;
+  EdidBinding.Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)(0x300000+GU_EDID_STOP);
+  EdidImage=(EFI_LOADED_IMAGE_PROTOCOL){0};
+  EdidImage.ImageBase=(VOID *)0x300000;EdidImage.ImageSize=GU_EDID_IMAGE_SIZE;EdidImage.ImageCodeType=EfiRuntimeServicesCode;
+  memcpy(EdidFilePath,(UINT8[]){4,6,20,0},4);memcpy(EdidFilePath+4,&EdidFile,16);memcpy(EdidFilePath+20,(UINT8[]){127,255,4,0},4);
+  EdidImage.FilePath=(VOID *)EdidFilePath;
+#endif
   if(scenario==8)OutBinding.Version=0x11;
   t.BootServices=&bs;t.ConsoleOutHandle=FX_Console;t.StandardErrorHandle=FX_Error;t.ConsoleInHandle=FX_Input;
   t.ConOut=&Text;t.StdErr=&Text;t.ConIn=&Keys;
